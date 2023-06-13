@@ -403,6 +403,10 @@ where
         self.router.clone()
     }
 
+    fn sst_segmentmap(&self) {
+        let _kv_engine = self.engine.test();
+    }
+
     fn modify_on_kv_engine(
         &self,
         mut region_modifies: HashMap<u64, Vec<Modify>>,

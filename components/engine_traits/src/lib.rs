@@ -311,6 +311,8 @@ mod table_properties;
 pub use crate::table_properties::*;
 mod checkpoint;
 pub use crate::checkpoint::*;
+mod sst_properties;
+pub use crate::sst_properties::*;
 
 // These modules contain more general traits, some of which may be implemented
 // by multiple types.

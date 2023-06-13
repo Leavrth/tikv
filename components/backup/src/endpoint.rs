@@ -1131,6 +1131,10 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
             ));
         }
     }
+
+    pub fn prepare(&self, _persistence: bool, _tx: Sender<PrepareResponse>) {
+        let _engine = self.engine.clone().sst_segmentmap();
+    }
 }
 
 impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Runnable for Endpoint<E, R> {
@@ -1146,8 +1150,9 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Runnable for Endpoint<E
                 info!("run backup task"; "task" => %task);
                 self.handle_backup_task(task);
             }
-            Operation::Prepare(_persistent, _tx) => {
-                unimplemented!();
+            Operation::Prepare(persistent, tx) => {
+                info!("run prepare");
+                self.prepare(persistent, tx);
             }
             Operation::Cleanup(_unique_id, _tx) => {
                 unimplemented!();

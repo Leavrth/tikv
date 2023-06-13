@@ -338,6 +338,11 @@ pub trait Engine: Send + Clone + 'static {
         unimplemented!()
     }
 
+    /// Get the metadata.
+    fn sst_segmentmap(&self) {
+        unimplemented!()
+    }
+
     /// Write modifications into internal local engine directly.
     ///
     /// region_modifies records each region's modifications.
