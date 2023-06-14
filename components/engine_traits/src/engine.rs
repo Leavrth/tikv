@@ -26,7 +26,6 @@ pub trait KvEngine:
     + TtlPropertiesExt
     + TablePropertiesExt
     + PerfContextExt
-    + SSTPropertiesExt
     + MiscExt
     + Send
     + Sync

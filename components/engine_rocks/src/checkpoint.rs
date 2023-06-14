@@ -1,17 +1,22 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::path::Path;
+use std::{path::Path, collections::BTreeMap, sync::Arc};
 
-use engine_traits::{Checkpointable, Checkpointer, Result};
+use engine_traits::{Checkpointable, Checkpointer, Result, SstFileInfo, CfName, ColumnFamilyMetadata};
+use rocksdb::DB;
+use txn_types::Key;
 
-use crate::{r2e, RocksEngine};
+use crate::{r2e, RocksEngine, util};
 
 impl Checkpointable for RocksEngine {
     type Checkpointer = RocksEngineCheckpointer;
 
     fn new_checkpointer(&self) -> Result<Self::Checkpointer> {
         match self.as_inner().new_checkpointer() {
-            Ok(pointer) => Ok(RocksEngineCheckpointer(pointer)),
+            Ok(pointer) => Ok(RocksEngineCheckpointer{
+                db: self.as_inner().clone(),
+                pointer
+            }),
             Err(e) => Err(r2e(e)),
         }
     }
@@ -25,7 +30,10 @@ impl Checkpointable for RocksEngine {
     }
 }
 
-pub struct RocksEngineCheckpointer(rocksdb::Checkpointer);
+pub struct RocksEngineCheckpointer {
+    db: Arc<DB>,
+    pointer: rocksdb::Checkpointer
+}
 
 impl Checkpointer for RocksEngineCheckpointer {
     fn create_at(
@@ -34,15 +42,46 @@ impl Checkpointer for RocksEngineCheckpointer {
         titan_out_dir: Option<&Path>,
         log_size_for_flush: u64,
     ) -> Result<()> {
-        self.0
+        self.pointer
             .create_at(db_out_dir, titan_out_dir, log_size_for_flush)
             .map_err(|e| r2e(e))
+    }
+
+    fn column_family_meta_data(&self, cf: CfName) -> Result<ColumnFamilyMetadata> {
+        let db = &self.db;
+        let handle = util::get_cf_handle(db, cf)?;
+        let metadata = self.db.get_column_family_meta_data(handle);
+        let levels_metadata = metadata.get_levels();
+
+        let mut file_count: usize = 0;
+        let mut file_size: usize = 0;
+        let mut lssts = Vec::new();
+        for level_metadata in levels_metadata {
+            let mut ssts = BTreeMap::new();
+            let files = level_metadata.get_files();
+            file_count += files.len();
+            for file in files {
+                file_size += file.get_size();
+                let start_key = Key::from_raw(file.get_smallestkey());
+                ssts.insert(start_key, SstFileInfo{
+                    file_name: file.get_name(),
+                    end_key: Key::from_raw(file.get_largestkey()),
+                });
+            };
+            lssts.push(ssts);
+        }
+
+        Ok(ColumnFamilyMetadata {
+            file_count,
+            file_size,
+            ssts: lssts
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use engine_traits::{Checkpointable, Checkpointer, Peekable, SyncMutable, ALL_CFS};
+    use engine_traits::{Checkpointable, Checkpointer, Peekable, SyncMutable, ALL_CFS, CF_DEFAULT, MiscExt};
     use tempfile::tempdir;
 
     use crate::util::new_engine;
@@ -59,5 +98,18 @@ mod tests {
         check_pointer.create_at(path2.as_path(), None, 0).unwrap();
         let engine2 = new_engine(path2.as_path().to_str().unwrap(), ALL_CFS).unwrap();
         assert_eq!(engine2.get_value(b"key").unwrap().unwrap(), b"value");
+    }
+
+    #[test]
+    fn test_column_family_meta_data() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("origin");
+        let engine = new_engine(path.as_path().to_str().unwrap(), ALL_CFS).unwrap();
+        engine.put_cf(CF_DEFAULT, b"key", b"value").unwrap();
+        engine.flush_cf(CF_DEFAULT, true).unwrap();
+
+        let check_pointer = engine.new_checkpointer().unwrap();
+        let t = check_pointer.column_family_meta_data(CF_DEFAULT).unwrap();
+        println!("{:?}", t);
     }
 }

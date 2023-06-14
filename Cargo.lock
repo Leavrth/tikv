@@ -548,6 +548,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "txn_types",
+ "uuid 0.8.2",
  "yatp",
 ]
 

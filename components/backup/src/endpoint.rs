@@ -11,7 +11,7 @@ use std::{
 use async_channel::SendError;
 use causal_ts::{CausalTsProvider, CausalTsProviderImpl};
 use concurrency_manager::ConcurrencyManager;
-use engine_traits::{name_to_cf, raw_ttl::ttl_current_ts, CfName, KvEngine, SstCompressionType};
+use engine_traits::{name_to_cf, raw_ttl::ttl_current_ts, CfName, KvEngine, SstCompressionType, Checkpointer, CF_DEFAULT, CF_WRITE};
 use external_storage::{BackendConfig, HdfsConfig};
 use external_storage_export::{create_storage, ExternalStorage};
 use futures::{channel::mpsc::*, executor::block_on};
@@ -24,6 +24,7 @@ use kvproto::{
 use online_config::OnlineConfig;
 use raft::StateRole;
 use raftstore::coprocessor::RegionInfoProvider;
+use segment_manager::SegmentMapManager;
 use tikv::{
     config::BackupConfig,
     storage::{
@@ -690,6 +691,7 @@ pub struct Endpoint<E: Engine, R: RegionInfoProvider + Clone + 'static> {
     tablets: LocalTablets<E::Local>,
     config_manager: ConfigManager,
     concurrency_manager: ConcurrencyManager,
+    segment_manager: SegmentMapManager,
     softlimit: SoftLimitKeeper,
     api_version: ApiVersion,
     causal_ts_provider: Option<Arc<CausalTsProviderImpl>>, // used in rawkv apiv2 only
@@ -853,6 +855,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         let config_manager = ConfigManager(Arc::new(RwLock::new(config)));
         let softlimit = SoftLimitKeeper::new(config_manager.clone());
         rt.spawn(softlimit.clone().run());
+        let segment_manager = SegmentMapManager::new();
         Endpoint {
             store_id,
             engine,
@@ -863,6 +866,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
             softlimit,
             config_manager,
             concurrency_manager,
+            segment_manager,
             api_version,
             causal_ts_provider,
         }
@@ -1132,8 +1136,24 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         }
     }
 
-    pub fn prepare(&self, _persistence: bool, _tx: Sender<PrepareResponse>) {
-        let _engine = self.engine.clone().sst_segmentmap();
+    pub fn prepare(&mut self, _persistence: bool, mut tx: Sender<PrepareResponse>) {
+        let checkpointer = self.engine.checkpointer().unwrap();
+        let default_metadata = checkpointer.column_family_meta_data(CF_DEFAULT).unwrap();
+        let write_metadata = checkpointer.column_family_meta_data(CF_WRITE).unwrap();
+
+        let s1 = format!("default_segmentmap:{:?}", default_metadata);
+        let s2 = format!("write_segmentmap:{:?}", write_metadata);
+        info!("{}", s1);
+        info!("{}", s2);
+
+        let id = self.segment_manager.register(default_metadata.ssts, write_metadata.ssts);
+        let mut resp = PrepareResponse::new();
+        resp.set_unique_id(id);
+        resp.set_collect_file_count((default_metadata.file_count + write_metadata.file_count) as u64);
+        resp.set_collect_file_size((default_metadata.file_size + write_metadata.file_size) as u64);
+        if let Err(e) = tx.try_send(resp) {
+            error_unknown!(?e; "failed to send response");
+        }
     }
 }
 

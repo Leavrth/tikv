@@ -1,8 +1,10 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::path::Path;
+use std::{path::Path, collections::BTreeMap, fmt::Debug};
 
-use crate::Result;
+use txn_types::Key;
+
+use crate::{Result, CfName};
 
 pub trait Checkpointable {
     type Checkpointer: Checkpointer;
@@ -19,4 +21,39 @@ pub trait Checkpointer {
         titan_out_dir: Option<&Path>,
         log_size_for_flush: u64,
     ) -> Result<()>;
+
+    fn column_family_meta_data(&self, _cf: CfName) -> Result<ColumnFamilyMetadata> {
+        unimplemented!()
+    }
+}
+
+pub struct SstFileInfo {
+    pub file_name: String,
+   //pub start_key: Key,
+    pub end_key: Key,
+}
+
+pub struct ColumnFamilyMetadata {
+    pub file_count: usize,
+    pub file_size: usize,
+    pub ssts: Vec<BTreeMap<Key, SstFileInfo>>,
+}
+
+impl Debug for ColumnFamilyMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut binding = f.debug_struct("ColumnFamilyMetadata");
+        binding.field("file_count", &self.file_count);
+        binding.field("file_size", &self.file_size);
+
+        for (level, ssts) in self.ssts.iter().enumerate() {
+            let mut ss = String::new();
+            for SstFileInfo{file_name, ..} in ssts {
+                let str = format!("name: {file_name}");
+                ss = ss + &str
+            }
+            binding.field(&format!("level: {level}"), &ss);
+        }
+
+        binding.finish()
+    }
 }

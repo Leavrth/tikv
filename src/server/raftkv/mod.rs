@@ -392,6 +392,7 @@ where
 {
     type Snap = RegionSnapshot<E::Snapshot>;
     type Local = E;
+    type Checkpointer = E::Checkpointer;
 
     fn kv_engine(&self) -> Option<E> {
         Some(self.engine.clone())
@@ -403,8 +404,8 @@ where
         self.router.clone()
     }
 
-    fn sst_segmentmap(&self) {
-        let _kv_engine = self.engine.test();
+    fn checkpointer(&self) -> Option<E::Checkpointer> {
+        self.engine.new_checkpointer().ok()
     }
 
     fn modify_on_kv_engine(

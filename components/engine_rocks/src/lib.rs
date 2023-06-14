@@ -68,8 +68,6 @@ pub use crate::perf_context_impl::{
     PerfStatisticsInstant, ReadPerfContext, ReadPerfInstant, WritePerfContext, WritePerfInstant,
 };
 mod perf_context_metrics;
-mod sst_properties;
-pub use crate::sst_properties::*;
 
 mod engine_iterator;
 pub use crate::engine_iterator::*;

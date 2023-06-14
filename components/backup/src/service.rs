@@ -112,7 +112,7 @@ where
             } else {
                 sink.fail(RpcStatus::with_message(
                     RpcStatusCode::INTERNAL,
-                    format!("prepare recv nothing"),
+                    "prepare recv nothing".to_string(),
                 ));
             };
         };
@@ -145,7 +145,7 @@ where
             } else {
                 sink.fail(RpcStatus::with_message(
                     RpcStatusCode::INTERNAL,
-                    format!("cleanup recv nothing"),
+                    "cleanup recv nothing".to_string(),
                 ));
             };
         };

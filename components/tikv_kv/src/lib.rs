@@ -37,7 +37,7 @@ use std::{
 use collections::HashMap;
 use engine_traits::{
     CfName, IterOptions, KvEngine as LocalEngine, Mutable, MvccProperties, ReadOptions,
-    TabletRegistry, WriteBatch, CF_DEFAULT, CF_LOCK,
+    TabletRegistry, WriteBatch, CF_DEFAULT, CF_LOCK, Checkpointer,
 };
 use error_code::{self, ErrorCode, ErrorCodeExt};
 use futures::{compat::Future01CompatExt, future::BoxFuture, prelude::*};
@@ -325,6 +325,7 @@ pub struct SnapContext<'a> {
 pub trait Engine: Send + Clone + 'static {
     type Snap: Snapshot;
     type Local: LocalEngine;
+    type Checkpointer: Checkpointer;
 
     /// Local storage engine.
     ///
@@ -338,8 +339,8 @@ pub trait Engine: Send + Clone + 'static {
         unimplemented!()
     }
 
-    /// Get the metadata.
-    fn sst_segmentmap(&self) {
+    /// Get the checkpointer.
+    fn checkpointer(&self) -> Option<Self::Checkpointer> {
         unimplemented!()
     }
 
