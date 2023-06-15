@@ -12,7 +12,7 @@ use async_channel::SendError;
 use causal_ts::{CausalTsProvider, CausalTsProviderImpl};
 use concurrency_manager::ConcurrencyManager;
 use engine_traits::{name_to_cf, raw_ttl::ttl_current_ts, CfName, KvEngine, SstCompressionType, Checkpointer, CF_DEFAULT, CF_WRITE};
-use external_storage::{BackendConfig, HdfsConfig};
+use external_storage::{BackendConfig, HdfsConfig, UnpinReader};
 use external_storage_export::{create_storage, ExternalStorage};
 use futures::{channel::mpsc::*, executor::block_on};
 use kvproto::{
@@ -43,6 +43,7 @@ use tikv_util::{
     worker::Runnable,
 };
 use tokio::runtime::Runtime;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use txn_types::{Key, Lock, TimeStamp};
 
 use crate::{
@@ -72,6 +73,8 @@ struct Request {
     compression_level: i32,
     cipher: CipherInfo,
     replica_read: bool,
+    mode: BackupMode,
+    ssts_id: String,
 }
 
 // Backup Operation corrosponsed to backup service
@@ -104,6 +107,8 @@ impl fmt::Debug for Task {
             .field("is_raw_kv", &self.request.is_raw_kv)
             .field("dst_api_ver", &self.request.dst_api_ver)
             .field("cf", &self.request.cf)
+            .field("mode", &self.request.mode)
+            .field("unique_id", &self.request.ssts_id)
             .finish()
     }
 }
@@ -142,6 +147,8 @@ impl Task {
                 compression_type: req.get_compression_type(),
                 compression_level: req.get_compression_level(),
                 replica_read: req.get_replica_read(),
+                mode: req.get_mode(),
+                ssts_id: req.unique_id,
                 cipher: req.cipher_info.unwrap_or_else(|| {
                     let mut cipher = CipherInfo::default();
                     cipher.set_cipher_type(EncryptionMethod::Plaintext);
@@ -296,6 +303,94 @@ async fn send_to_worker_with_metrics<EK: KvEngine>(
     let begin = Instant::now();
     tx.send(files).await?;
     BACKUP_SCAN_WAIT_FOR_WRITER_HISTOGRAM.observe(begin.saturating_elapsed_secs());
+    Ok(())
+}
+
+struct SstSendInfo {
+    file_names_d: Vec<Vec<(String, usize)>>,
+    file_names_w: Vec<Vec<(String, usize)>>,
+    start_key: Vec<u8>,
+    end_key: Vec<u8>,
+}
+
+async fn save_sst_file_worker (
+    mut segment_manager: SegmentMapManager,
+    rx: async_channel::Receiver<SstSendInfo>,
+    tx: UnboundedSender<BackupResponse>,
+    storage: Arc<dyn ExternalStorage>,
+) {
+    while let Ok(msg) = rx.recv().await {
+        let mut response = BackupResponse::default();
+        let mut d_progress_l = 0;
+        let mut d_progress_f = 0;
+        let mut w_progress_l = 0;
+        let mut w_progress_f = 0;
+        match upload_sst_file(
+            &msg.file_names_d,
+            &msg.file_names_w,
+            &mut d_progress_l, &mut d_progress_f,
+            &mut w_progress_l, &mut w_progress_f,
+            storage.clone()).await {
+            Err(e) => {
+                error_unknown!(?e; "upload sst file failed";
+                "start_key" => &log_wrappers::Value::key(&msg.start_key),
+                "end_key" => &log_wrappers::Value::key(&msg.end_key),
+                );
+                let e = Error::from(e);
+                response.set_error(e.into());
+            }
+            Ok(_) => {
+                let file = File::default();
+                response.set_files(vec![file].into());
+            }
+        }
+
+        segment_manager.release_index(
+            msg.file_names_d, d_progress_l, d_progress_f,
+            msg.file_names_w, w_progress_l, w_progress_f,
+        );
+
+        response.set_start_key(msg.start_key.clone());
+        response.set_end_key(msg.end_key.clone());
+        // todo: send the count.
+        if let Err(e) = tx.unbounded_send(response) {
+            error_unknown!(?e; "backup failed to send response";
+            "start_key" => &log_wrappers::Value::key(&msg.start_key),
+            "end_key" => &log_wrappers::Value::key(&msg.end_key),);
+            if e.is_disconnected() {
+                return;
+            }
+        }
+    }
+}
+
+async fn upload_sst_file(
+    ssts_d: &Vec<Vec<(String, usize)>>,
+    ssts_w: &Vec<Vec<(String, usize)>>,
+    d_progress_l: &mut usize, d_progress_f: &mut usize,
+    w_progress_l: &mut usize, w_progress_f: &mut usize,
+    storage: Arc<dyn ExternalStorage>,
+) -> std::io::Result<()> {
+    upload_sst_file_internal(ssts_d, d_progress_l, d_progress_f, storage.clone()).await?;
+    upload_sst_file_internal(ssts_w, w_progress_l, w_progress_f, storage).await
+}
+
+async fn upload_sst_file_internal(
+    ssts: &Vec<Vec<(String, usize)>>,
+    progress_l: &mut usize,
+    progress_f: &mut usize,
+    storage: Arc<dyn ExternalStorage>,
+) -> std::io::Result<()> {
+    for fs in ssts {
+        for (file_name, _) in fs {
+            let file = tokio::fs::File::open(file_name).await?;
+            let length = file.metadata().await?.len();
+            let reader = UnpinReader(Box::new(file.compat()));
+            storage.write(file_name, reader, length).await?;
+            *progress_f += 1;
+        }
+        *progress_l += 1;
+    }
     Ok(())
 }
 
@@ -1118,6 +1213,36 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         let backend = Arc::<dyn ExternalStorage>::from(backend);
         let concurrency = self.config_manager.0.read().unwrap().num_threads;
         self.pool.borrow_mut().adjust_with(concurrency);
+    
+        match request.mode {
+            BackupMode::Scan => self.handle_scan_backup(
+                concurrency,
+                prs,
+                backend,
+                codec,
+                request,
+                resp,
+            ),
+            BackupMode::File => self.handle_file_backup(
+                concurrency,
+                prs,
+                backend,
+                request,
+                resp,
+            ),
+            _ => error!("unknown backup mode"; "mode" => ?request.mode),
+        };
+    }
+
+    fn handle_scan_backup(
+        &self,
+        concurrency: usize,
+        prs: Arc<Mutex<Progress<R>>>,
+        backend: Arc<dyn ExternalStorage>,
+        codec: KeyValueCodec,
+        request: Request,
+        resp: UnboundedSender<BackupResponse>,
+    ) {
         let (tx, rx) = async_channel::bounded(1);
         for _ in 0..concurrency {
             self.spawn_backup_worker(
@@ -1136,6 +1261,74 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         }
     }
 
+    fn handle_file_backup(
+        &self,
+        concurrency: usize,
+        prs: Arc<Mutex<Progress<R>>>,
+        backend: Arc<dyn ExternalStorage>,
+        request: Request,
+        resp_tx: UnboundedSender<BackupResponse>,
+    ) {
+        let (tx, rx) = async_channel::bounded(1);
+        for _ in 0..concurrency {
+            self.io_pool.spawn(save_sst_file_worker(
+                self.segment_manager.clone(),
+                rx.clone(),
+                resp_tx.clone(),
+                backend.clone(),
+            ));
+        }
+
+        let mut segment_manager = self.segment_manager.clone();
+        let id = request.ssts_id;
+        let batch_size = self.config_manager.0.read().unwrap().batch_size;
+        self.pool.borrow_mut().spawn(async move {
+            loop {
+                let batch = {
+                    let progress: &mut Progress<_> = &mut prs.lock().unwrap();
+                    let batch = progress.forward(batch_size, request.replica_read);
+                    if batch.is_empty() {
+                        return;
+                    }
+                    batch
+                };
+
+                for brange in batch {
+                    if request.cancel.load(Ordering::SeqCst) {
+                        warn!("backup task has canceled"; "range" => ?brange);
+                        return;
+                    }
+                    let start_key = brange.start_key.map_or_else(Vec::new, |k| k.into_raw().unwrap());
+                    let end_key = brange.end_key.map_or_else(Vec::new, |k| k.into_raw().unwrap());
+                    let (d_ssts, w_ssts) = segment_manager.find_ssts(&id, &start_key, &end_key);
+                    if let Err(err) = tx.send(SstSendInfo {
+                        file_names_d: d_ssts.clone(),
+                        file_names_w: w_ssts.clone(),
+                        start_key,
+                        end_key,
+                    }).await {
+                        error_unknown!(%err; "error during backup");
+                        segment_manager.release_index(
+                            d_ssts,
+                            usize::MAX,
+                            usize::MAX,
+                            w_ssts,
+                            usize::MAX,
+                            usize::MAX,
+                        );
+                        let mut resp = BackupResponse::new();
+                        let err = Error::from(err);
+                        resp.set_error(err.into());
+                        if let Err(err) =  resp_tx.unbounded_send(resp) {
+                            warn!("failed to send response"; "err" => ?err)
+                        }
+                    }
+                }
+            }
+
+        })
+    }
+
     pub fn prepare(&mut self, _persistence: bool, mut tx: Sender<PrepareResponse>) {
         let checkpointer = self.engine.checkpointer().unwrap();
         let default_metadata = checkpointer.column_family_meta_data(CF_DEFAULT).unwrap();
@@ -1152,7 +1345,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         resp.set_collect_file_count((default_metadata.file_count + write_metadata.file_count) as u64);
         resp.set_collect_file_size((default_metadata.file_size + write_metadata.file_size) as u64);
         if let Err(e) = tx.try_send(resp) {
-            error_unknown!(?e; "failed to send response");
+            error_unknown!(?e; "[prepare] failed to send response");
         }
     }
 }
@@ -1610,6 +1803,8 @@ pub mod tests {
                         compression_level: 0,
                         cipher: CipherInfo::default(),
                         replica_read: false,
+                        mode: BackupMode::Scan,
+                        ssts_id: String::from("test"),
                     },
                     resp: tx,
                 };
@@ -1719,6 +1914,8 @@ pub mod tests {
                 compression_level: 0,
                 cipher: CipherInfo::default(),
                 replica_read: false,
+                mode: BackupMode::Scan,
+                ssts_id: String::from("test"),
             },
             resp: tx,
         };
@@ -1748,6 +1945,8 @@ pub mod tests {
                 compression_level: 0,
                 cipher: CipherInfo::default(),
                 replica_read: true,
+                mode: BackupMode::Scan,
+                ssts_id: String::from("test"),
             },
             resp: tx,
         };
@@ -1861,6 +2060,8 @@ pub mod tests {
                         compression_level: 0,
                         cipher: CipherInfo::default(),
                         replica_read: false,
+                        mode: BackupMode::Scan,
+                        ssts_id: String::from("test"),
                     },
                     resp: tx,
                 };

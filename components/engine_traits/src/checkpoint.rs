@@ -2,8 +2,6 @@
 
 use std::{path::Path, collections::BTreeMap, fmt::Debug};
 
-use txn_types::Key;
-
 use crate::{Result, CfName};
 
 pub trait Checkpointable {
@@ -30,13 +28,14 @@ pub trait Checkpointer {
 pub struct SstFileInfo {
     pub file_name: String,
    //pub start_key: Key,
-    pub end_key: Key,
+    pub end_key: Vec<u8>,
+    pub idx: usize,
 }
 
 pub struct ColumnFamilyMetadata {
     pub file_count: usize,
     pub file_size: usize,
-    pub ssts: Vec<BTreeMap<Key, SstFileInfo>>,
+    pub ssts: Vec<BTreeMap<Vec<u8>, SstFileInfo>>,
 }
 
 impl Debug for ColumnFamilyMetadata {
@@ -47,11 +46,14 @@ impl Debug for ColumnFamilyMetadata {
 
         for (level, ssts) in self.ssts.iter().enumerate() {
             let mut ss = String::new();
-            for SstFileInfo{file_name, ..} in ssts {
+            for SstFileInfo{file_name, ..} in ssts.values() {
                 let str = format!("name: {file_name}");
                 ss = ss + &str
             }
             binding.field(&format!("level: {level}"), &ss);
+            for sst in ssts {
+                binding.field("sk", sst.0);
+            }
         }
 
         binding.finish()
