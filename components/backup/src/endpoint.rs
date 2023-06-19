@@ -4,7 +4,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     fmt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{atomic::*, mpsc, Arc, Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -316,12 +316,11 @@ struct SstSendInfo {
 
 async fn save_sst_file_worker (
     segment_manager: Arc<SegmentMapManager>,
-    data_dir: String,
+    data_dir: PathBuf,
     rx: async_channel::Receiver<SstSendInfo>,
     tx: UnboundedSender<BackupResponse>,
     storage: Arc<dyn ExternalStorage>,
 ) {
-    let dir = Path::new(&data_dir);
     while let Ok(msg) = rx.recv().await {
         let mut response = BackupResponse::default();
         let mut d_progress_l = 0;
@@ -329,7 +328,7 @@ async fn save_sst_file_worker (
         let mut w_progress_l = 0;
         let mut w_progress_f = 0;
         match upload_sst_file(
-            dir,
+            &data_dir,
             &msg.file_names_d,
             &msg.file_names_w,
             &mut d_progress_l, &mut d_progress_f,
@@ -368,20 +367,20 @@ async fn save_sst_file_worker (
     }
 }
 
-async fn upload_sst_file(
-    data_dir: &Path,
+async fn upload_sst_file<P: AsRef<Path>>(
+    data_dir: P,
     ssts_d: &Vec<Vec<(String, usize)>>,
     ssts_w: &Vec<Vec<(String, usize)>>,
     d_progress_l: &mut usize, d_progress_f: &mut usize,
     w_progress_l: &mut usize, w_progress_f: &mut usize,
     storage: Arc<dyn ExternalStorage>,
 ) -> std::io::Result<()> {
-    upload_sst_file_internal(data_dir, ssts_d, d_progress_l, d_progress_f, storage.clone()).await?;
-    upload_sst_file_internal(data_dir, ssts_w, w_progress_l, w_progress_f, storage).await
+    upload_sst_file_internal(data_dir.as_ref(), ssts_d, d_progress_l, d_progress_f, storage.clone()).await?;
+    upload_sst_file_internal(data_dir.as_ref(), ssts_w, w_progress_l, w_progress_f, storage).await
 }
 
-async fn upload_sst_file_internal(
-    data_dir: &Path,
+async fn upload_sst_file_internal<P: AsRef<Path>>(
+    data_dir: P,
     ssts: &Vec<Vec<(String, usize)>>,
     progress_l: &mut usize,
     progress_f: &mut usize,
@@ -393,7 +392,7 @@ async fn upload_sst_file_internal(
                 Some(s) => s,
                 None => file_name_relative,
             };
-            let file_name = data_dir.join(file_name_relative);
+            let file_name = data_dir.as_ref().join(file_name_relative);
             let file = tokio::fs::File::open(file_name).await?;
             let length = file.metadata().await?.len();
             let reader = UnpinReader(Box::new(file.compat()));
@@ -800,7 +799,7 @@ pub struct Endpoint<E: Engine, R: RegionInfoProvider + Clone + 'static> {
     segment_router: SegmentMapRouter,
     softlimit: SoftLimitKeeper,
     api_version: ApiVersion,
-    data_dir: String,
+    data_dir: PathBuf,
     causal_ts_provider: Option<Arc<CausalTsProviderImpl>>, // used in rawkv apiv2 only
 
     pub(crate) engine: E,
@@ -947,7 +946,7 @@ impl<R: RegionInfoProvider> Progress<R> {
 }
 
 impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
-    pub fn new(
+    pub fn new<P: AsRef<Path>>(
         store_id: u64,
         engine: E,
         region_info: R,
@@ -955,7 +954,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         config: BackupConfig,
         concurrency_manager: ConcurrencyManager,
         api_version: ApiVersion,
-        data_dir: String,
+        root_dir: P,
         causal_ts_provider: Option<Arc<CausalTsProviderImpl>>,
     ) -> Endpoint<E, R> {
         let pool = ControlThreadPool::new();
@@ -964,6 +963,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         let softlimit = SoftLimitKeeper::new(config_manager.clone());
         rt.spawn(softlimit.clone().run());
         let segment_router = SegmentMapRouter::new();
+        let data_dir = root_dir.as_ref().join("db");
         Endpoint {
             store_id,
             engine,
