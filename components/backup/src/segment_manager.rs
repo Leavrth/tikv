@@ -1,7 +1,7 @@
 // Copyright 2023 TiKV Project Authors. Licensed under Apache-2.0.
 
 use engine_traits::SstFileInfo;
-use std::{collections::{HashMap, BTreeMap}, sync::{Arc, RwLock, Mutex}};
+use std::{collections::{HashMap, BTreeMap}, sync::{Arc, Mutex}};
 
 enum SstStatus {
     NotUpload,
@@ -10,63 +10,77 @@ enum SstStatus {
 }
 
 type SegmentMap = Vec<BTreeMap<Vec<u8>, SstFileInfo>>;
+pub struct SegmentMapRouter(HashMap<String, Arc<SegmentMapManager>>);
 
-#[derive(Clone)]
-pub struct SegmentMapManager {
-    map: Arc<RwLock<HashMap<String, (SegmentMap, SegmentMap)>>>,
-    // TODO: directly update the uploaded flag in hashmap
-    index_d: Arc<Mutex<Vec<Vec<SstStatus>>>>,
-    index_w: Arc<Mutex<Vec<Vec<SstStatus>>>>,
-}
-
-impl SegmentMapManager {
+impl SegmentMapRouter {
     pub fn new() -> Self {
-        Self {
-            map: Arc::new(RwLock::new(HashMap::new())),
-            index_d: Arc::new(Mutex::new(Vec::new())),
-            index_w: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self(HashMap::new())
     }
 
     pub fn register(&mut self, d: SegmentMap, w: SegmentMap) -> String {
-        let id = uuid::Uuid::new_v4().to_string();
-        {
-            let mut map = self.map.write().unwrap();
-            map.insert(id.clone(), (d, w));
-        }
-        self.generate_index(&id);
+        let (id, manager) = SegmentMapManager::register(d, w);
+        self.0.insert(id.clone(), Arc::new(manager));
         id
     }
 
-    fn generate_index(&mut self, id: &str) {
-        let mut map = self.map.write().unwrap();
-        let map = map.get_mut(id).unwrap();
-        {
-            let mut index_d = self.index_d.lock().unwrap();
-            generate_index_internal(&mut map.0, &mut index_d);
-        }
-        {
-            let mut index_w = self.index_w.lock().unwrap();
-            generate_index_internal(&mut map.1, &mut index_w);
+    pub fn route(&self, id: &str) -> Option<Arc<SegmentMapManager>> {
+        self.0.get(id).cloned()
+    }
+}
+
+pub struct SegmentMapManager {
+    map: (SegmentMap, SegmentMap),
+    // TODO: directly update the uploaded flag in hashmap
+    index_d: Mutex<Vec<Vec<SstStatus>>>,
+    index_w: Mutex<Vec<Vec<SstStatus>>>,
+}
+
+impl SegmentMapManager {
+    fn new(mut d: SegmentMap, mut w: SegmentMap) -> Self {
+        let index_d_raw = Self::generate_index(&mut d);
+        let index_w_raw = Self::generate_index(&mut w);
+        Self {
+            map: (d, w),
+
+            index_d: Mutex::new(index_d_raw),
+            index_w: Mutex::new(index_w_raw),
         }
     }
 
-    pub fn find_ssts(&mut self, id: &str, start_key: &Vec<u8>, end_key: &Vec<u8>) -> (Vec<Vec<(String, usize)>>, Vec<Vec<(String, usize)>>) {
-        let m = self.map.read().unwrap();
-        let map = m.get(id).unwrap();
+    pub fn register(d: SegmentMap, w: SegmentMap) -> (String, Self) {
+        let id = uuid::Uuid::new_v4().to_string();
+        
+        (id, Self::new(d, w))
+    }
+
+    fn generate_index(map: &mut SegmentMap) -> Vec<Vec<SstStatus>> {
+        let mut index = Vec::new();
+        for tree in map {
+            let mut lvl_idx = Vec::new();
+            for (idx, (_, info)) in tree.iter_mut().enumerate() {
+                info.idx = idx;
+                lvl_idx.push(SstStatus::NotUpload);
+            }
+    
+            index.push(lvl_idx);
+        }
+        index
+    }
+
+    pub fn find_ssts(&self, start_key: &Vec<u8>, end_key: &Vec<u8>) -> (Vec<Vec<(String, usize)>>, Vec<Vec<(String, usize)>>) {
         let d = {
             let mut index_d = self.index_d.lock().unwrap();
-            find_ssts_internal(&mut index_d, &map.0, start_key, end_key)
+            find_ssts_internal(&mut index_d, &self.map.0, start_key, end_key)
         };
         let w = {
             let mut index_w = self.index_w.lock().unwrap();
-            find_ssts_internal(&mut index_w, &map.1, start_key, end_key)
+            find_ssts_internal(&mut index_w, &self.map.1, start_key, end_key)
         };
         (d, w)
     }
 
     pub fn release_index(
-        &mut self,
+        &self,
         d: Vec<Vec<(String, usize)>>, d_progress_l: usize, d_progress_f: usize,
         w: Vec<Vec<(String, usize)>>, w_progress_l: usize, w_progress_f: usize,
     ) {
@@ -81,18 +95,6 @@ impl SegmentMapManager {
     }
 }
 
-fn generate_index_internal(map: &mut SegmentMap, index: &mut Vec<Vec<SstStatus>>) {
-    for tree in map {
-        let mut lvl_idx = Vec::new();
-        for (idx, (_, info)) in tree.iter_mut().enumerate() {
-            info.idx = idx;
-            lvl_idx.push(SstStatus::NotUpload);
-        }
-
-        index.push(lvl_idx);
-    }
-}
-
 fn find_ssts_internal(index: &mut [Vec<SstStatus>], map: &SegmentMap, start_key: &Vec<u8>, end_key: &Vec<u8>) -> Vec<Vec<(String, usize)>> {
     let mut res = Vec::new();
     for (level, tree) in map.iter().enumerate() {
@@ -100,7 +102,7 @@ fn find_ssts_internal(index: &mut [Vec<SstStatus>], map: &SegmentMap, start_key:
         let mut fs = Vec::new();
         for f in tree.iter().filter(|info| {
             let idx = info.1.idx;
-            if matches!(lvl_index[idx], SstStatus::NotUpload) {
+            if !matches!(lvl_index[idx], SstStatus::NotUpload) {
                 return false
             }
             

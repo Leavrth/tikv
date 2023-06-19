@@ -4,6 +4,7 @@ use std::{path::Path, collections::BTreeMap, sync::Arc};
 
 use engine_traits::{Checkpointable, Checkpointer, Result, SstFileInfo, CfName, ColumnFamilyMetadata};
 use rocksdb::DB;
+use keys::origin_key;
 
 use crate::{r2e, RocksEngine, util};
 
@@ -61,10 +62,11 @@ impl Checkpointer for RocksEngineCheckpointer {
             file_count += files.len();
             for file in files {
                 file_size += file.get_size();
-                let start_key = file.get_smallestkey().to_vec();
+                let start_key = origin_key(file.get_smallestkey()).to_vec();
+                let end_key = origin_key(file.get_largestkey()).to_vec();
                 ssts.insert(start_key, SstFileInfo{
                     file_name: file.get_name(),
-                    end_key: file.get_largestkey().to_vec(),
+                    end_key,
                     idx: 0,
                 });
             };

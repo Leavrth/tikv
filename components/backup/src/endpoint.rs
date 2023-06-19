@@ -4,6 +4,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     fmt,
+    path::Path,
     sync::{atomic::*, mpsc, Arc, Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -24,7 +25,7 @@ use kvproto::{
 use online_config::OnlineConfig;
 use raft::StateRole;
 use raftstore::coprocessor::RegionInfoProvider;
-use segment_manager::SegmentMapManager;
+use segment_manager::{SegmentMapManager, SegmentMapRouter};
 use tikv::{
     config::BackupConfig,
     storage::{
@@ -314,11 +315,13 @@ struct SstSendInfo {
 }
 
 async fn save_sst_file_worker (
-    mut segment_manager: SegmentMapManager,
+    segment_manager: Arc<SegmentMapManager>,
+    data_dir: String,
     rx: async_channel::Receiver<SstSendInfo>,
     tx: UnboundedSender<BackupResponse>,
     storage: Arc<dyn ExternalStorage>,
 ) {
+    let dir = Path::new(&data_dir);
     while let Ok(msg) = rx.recv().await {
         let mut response = BackupResponse::default();
         let mut d_progress_l = 0;
@@ -326,6 +329,7 @@ async fn save_sst_file_worker (
         let mut w_progress_l = 0;
         let mut w_progress_f = 0;
         match upload_sst_file(
+            dir,
             &msg.file_names_d,
             &msg.file_names_w,
             &mut d_progress_l, &mut d_progress_f,
@@ -365,28 +369,35 @@ async fn save_sst_file_worker (
 }
 
 async fn upload_sst_file(
+    data_dir: &Path,
     ssts_d: &Vec<Vec<(String, usize)>>,
     ssts_w: &Vec<Vec<(String, usize)>>,
     d_progress_l: &mut usize, d_progress_f: &mut usize,
     w_progress_l: &mut usize, w_progress_f: &mut usize,
     storage: Arc<dyn ExternalStorage>,
 ) -> std::io::Result<()> {
-    upload_sst_file_internal(ssts_d, d_progress_l, d_progress_f, storage.clone()).await?;
-    upload_sst_file_internal(ssts_w, w_progress_l, w_progress_f, storage).await
+    upload_sst_file_internal(data_dir, ssts_d, d_progress_l, d_progress_f, storage.clone()).await?;
+    upload_sst_file_internal(data_dir, ssts_w, w_progress_l, w_progress_f, storage).await
 }
 
 async fn upload_sst_file_internal(
+    data_dir: &Path,
     ssts: &Vec<Vec<(String, usize)>>,
     progress_l: &mut usize,
     progress_f: &mut usize,
     storage: Arc<dyn ExternalStorage>,
 ) -> std::io::Result<()> {
     for fs in ssts {
-        for (file_name, _) in fs {
+        for (file_name_relative, _) in fs {
+            let file_name_relative = match file_name_relative.strip_prefix('/') {
+                Some(s) => s,
+                None => file_name_relative,
+            };
+            let file_name = data_dir.join(file_name_relative);
             let file = tokio::fs::File::open(file_name).await?;
             let length = file.metadata().await?.len();
             let reader = UnpinReader(Box::new(file.compat()));
-            storage.write(file_name, reader, length).await?;
+            storage.write(file_name_relative, reader, length).await?;
             *progress_f += 1;
         }
         *progress_l += 1;
@@ -786,9 +797,10 @@ pub struct Endpoint<E: Engine, R: RegionInfoProvider + Clone + 'static> {
     tablets: LocalTablets<E::Local>,
     config_manager: ConfigManager,
     concurrency_manager: ConcurrencyManager,
-    segment_manager: SegmentMapManager,
+    segment_router: SegmentMapRouter,
     softlimit: SoftLimitKeeper,
     api_version: ApiVersion,
+    data_dir: String,
     causal_ts_provider: Option<Arc<CausalTsProviderImpl>>, // used in rawkv apiv2 only
 
     pub(crate) engine: E,
@@ -943,6 +955,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         config: BackupConfig,
         concurrency_manager: ConcurrencyManager,
         api_version: ApiVersion,
+        data_dir: String,
         causal_ts_provider: Option<Arc<CausalTsProviderImpl>>,
     ) -> Endpoint<E, R> {
         let pool = ControlThreadPool::new();
@@ -950,7 +963,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         let config_manager = ConfigManager(Arc::new(RwLock::new(config)));
         let softlimit = SoftLimitKeeper::new(config_manager.clone());
         rt.spawn(softlimit.clone().run());
-        let segment_manager = SegmentMapManager::new();
+        let segment_router = SegmentMapRouter::new();
         Endpoint {
             store_id,
             engine,
@@ -961,8 +974,9 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
             softlimit,
             config_manager,
             concurrency_manager,
-            segment_manager,
+            segment_router,
             api_version,
+            data_dir,
             causal_ts_provider,
         }
     }
@@ -1269,18 +1283,35 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         request: Request,
         resp_tx: UnboundedSender<BackupResponse>,
     ) {
+        let id = request.ssts_id;
+        let segment_manager = match self.segment_router.route(&id) {
+            Some(manager) => manager,
+            None => {
+                let mut resp = BackupResponse::new();
+                let err_msg = format!(
+                    "ssts are not found, unique id: {:?}",
+                    id
+                );
+                resp.set_error(crate::Error::Other(box_err!(err_msg)).into());
+                if let Err(err) =  resp_tx.unbounded_send(resp) {
+                    warn!("failed to send response"; "err" => ?err)
+                }
+                return;
+            },
+        };
+
         let (tx, rx) = async_channel::bounded(1);
         for _ in 0..concurrency {
             self.io_pool.spawn(save_sst_file_worker(
-                self.segment_manager.clone(),
+                segment_manager.clone(),
+                self.data_dir.clone(),
                 rx.clone(),
                 resp_tx.clone(),
                 backend.clone(),
             ));
         }
 
-        let mut segment_manager = self.segment_manager.clone();
-        let id = request.ssts_id;
+
         let batch_size = self.config_manager.0.read().unwrap().batch_size;
         self.pool.borrow_mut().spawn(async move {
             loop {
@@ -1300,7 +1331,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                     }
                     let start_key = brange.start_key.map_or_else(Vec::new, |k| k.into_raw().unwrap());
                     let end_key = brange.end_key.map_or_else(Vec::new, |k| k.into_raw().unwrap());
-                    let (d_ssts, w_ssts) = segment_manager.find_ssts(&id, &start_key, &end_key);
+                    let (d_ssts, w_ssts) = segment_manager.find_ssts(&start_key, &end_key);
                     if let Err(err) = tx.send(SstSendInfo {
                         file_names_d: d_ssts.clone(),
                         file_names_w: w_ssts.clone(),
@@ -1339,7 +1370,7 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         info!("{}", s1);
         info!("{}", s2);
 
-        let id = self.segment_manager.register(default_metadata.ssts, write_metadata.ssts);
+        let id = self.segment_router.register(default_metadata.ssts, write_metadata.ssts);
         let mut resp = PrepareResponse::new();
         resp.set_unique_id(id);
         resp.set_collect_file_count((default_metadata.file_count + write_metadata.file_count) as u64);
@@ -1658,6 +1689,7 @@ pub mod tests {
                 },
                 concurrency_manager,
                 api_version,
+                String::from("test"),
                 causal_ts_provider,
             ),
         )
