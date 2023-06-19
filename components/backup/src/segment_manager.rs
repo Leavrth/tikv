@@ -133,3 +133,45 @@ fn release_index_internal(index: &mut [Vec<SstStatus>], findex: Vec<Vec<(String,
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use engine_traits::SstFileInfo;
+
+    use super::SegmentMap;
+
+    #[test]
+    fn test() {
+        use super::SegmentMapManager;
+
+        let (id, manager) = SegmentMapManager::register(generate_segment_map(), generate_segment_map());
+        println!("{id}");
+        let sk = "1_1".as_bytes().to_vec();
+        let ek = "2_1".as_bytes().to_vec();
+        let (d, _) = manager.find_ssts(&sk, &ek);
+        println!("{:?}", d);
+    }
+
+    fn generate_segment_map() -> SegmentMap {
+        let mut map = vec![
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        ];
+        for (i, m) in map.iter_mut().enumerate() {
+            for j in 0..3 {
+                let sk = format!("{i}_{j}").into_bytes();
+                let ek = format!("{}_{}", i, j+1).into_bytes();
+                m.insert(sk, SstFileInfo {
+                    end_key: ek,
+                    file_name: String::from("/asdfg.sst"),
+                    idx: 0,
+                });
+            }
+        }
+
+        map
+    }
+}

@@ -1329,8 +1329,8 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                         warn!("backup task has canceled"; "range" => ?brange);
                         return;
                     }
-                    let start_key = brange.start_key.map_or_else(Vec::new, |k| k.into_raw().unwrap());
-                    let end_key = brange.end_key.map_or_else(Vec::new, |k| k.into_raw().unwrap());
+                    let start_key = brange.start_key.map_or_else(Vec::new, |k| k.into_encoded());
+                    let end_key = brange.end_key.map_or_else(Vec::new, |k| k.into_encoded());
                     let (d_ssts, w_ssts) = segment_manager.find_ssts(&start_key, &end_key);
                     if let Err(err) = tx.send(SstSendInfo {
                         file_names_d: d_ssts.clone(),
