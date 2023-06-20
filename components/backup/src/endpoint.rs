@@ -50,7 +50,7 @@ use txn_types::{Key, Lock, TimeStamp};
 use crate::{
     metrics::*,
     softlimit::{CpuStatistics, SoftLimit, SoftLimitByCpu},
-    utils::{ControlThreadPool, KeyValueCodec},
+    utils::{ControlThreadPool, KeyValueCodec, convert_encoded_key_to_raw_key},
     writer::{BackupWriterBuilder, CfNameWrap},
     Error, *,
 };
@@ -312,6 +312,7 @@ struct SstSendInfo {
     file_names_w: Vec<Vec<(String, usize)>>,
     start_key: Vec<u8>,
     end_key: Vec<u8>,
+    ssts_cnt: usize,
 }
 
 async fn save_sst_file_worker (
@@ -353,8 +354,10 @@ async fn save_sst_file_worker (
             msg.file_names_w, w_progress_l, w_progress_f,
         );
 
-        response.set_start_key(msg.start_key.clone());
-        response.set_end_key(msg.end_key.clone());
+        let raw_start_key = convert_encoded_key_to_raw_key(msg.start_key.clone());
+        let raw_end_key = convert_encoded_key_to_raw_key(msg.end_key.clone());
+        response.set_start_key(raw_start_key);
+        response.set_end_key(raw_end_key);
         // todo: send the count.
         if let Err(e) = tx.unbounded_send(response) {
             error_unknown!(?e; "backup failed to send response";
@@ -1331,12 +1334,25 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                     }
                     let start_key = brange.start_key.map_or_else(Vec::new, |k| k.into_encoded());
                     let end_key = brange.end_key.map_or_else(Vec::new, |k| k.into_encoded());
-                    let (d_ssts, w_ssts) = segment_manager.find_ssts(&start_key, &end_key);
+                    let (d_ssts, w_ssts, ssts_cnt) = segment_manager.find_ssts(&start_key, &end_key);
+                    info!("select {} ssts", ssts_cnt);
+                    if ssts_cnt == 0 {
+                        let mut resp = BackupResponse::new();
+                        let raw_start_key = convert_encoded_key_to_raw_key(start_key);
+                        let raw_end_key = convert_encoded_key_to_raw_key(end_key);
+                        resp.set_start_key(raw_start_key);
+                        resp.set_end_key(raw_end_key);
+                        if let Err(err) =  resp_tx.unbounded_send(resp) {
+                            warn!("failed to send response"; "err" => ?err)
+                        }
+                        continue;
+                    }
                     if let Err(err) = tx.send(SstSendInfo {
                         file_names_d: d_ssts.clone(),
                         file_names_w: w_ssts.clone(),
                         start_key,
                         end_key,
+                        ssts_cnt,
                     }).await {
                         error_unknown!(%err; "error during backup");
                         segment_manager.release_index(

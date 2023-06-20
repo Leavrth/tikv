@@ -67,16 +67,16 @@ impl SegmentMapManager {
         index
     }
 
-    pub fn find_ssts(&self, start_key: &Vec<u8>, end_key: &Vec<u8>) -> (Vec<Vec<(String, usize)>>, Vec<Vec<(String, usize)>>) {
-        let d = {
+    pub fn find_ssts(&self, start_key: &Vec<u8>, end_key: &Vec<u8>) -> (Vec<Vec<(String, usize)>>, Vec<Vec<(String, usize)>>, usize) {
+        let (d, d_cnt) = {
             let mut index_d = self.index_d.lock().unwrap();
             find_ssts_internal(&mut index_d, &self.map.0, start_key, end_key)
         };
-        let w = {
+        let (w, w_cnt) = {
             let mut index_w = self.index_w.lock().unwrap();
             find_ssts_internal(&mut index_w, &self.map.1, start_key, end_key)
         };
-        (d, w)
+        (d, w, d_cnt + w_cnt)
     }
 
     pub fn release_index(
@@ -95,8 +95,9 @@ impl SegmentMapManager {
     }
 }
 
-fn find_ssts_internal(index: &mut [Vec<SstStatus>], map: &SegmentMap, start_key: &Vec<u8>, end_key: &Vec<u8>) -> Vec<Vec<(String, usize)>> {
+fn find_ssts_internal(index: &mut [Vec<SstStatus>], map: &SegmentMap, start_key: &Vec<u8>, end_key: &Vec<u8>) -> (Vec<Vec<(String, usize)>>, usize) {
     let mut res = Vec::new();
+    let mut count = 0;
     for (level, tree) in map.iter().enumerate() {
         let lvl_index = &mut index[level];
         let mut fs = Vec::new();
@@ -115,11 +116,12 @@ fn find_ssts_internal(index: &mut [Vec<SstStatus>], map: &SegmentMap, start_key:
             }
             false
         }) {
+            count += 1;
             fs.push((f.1.file_name.clone(), f.1.idx));
         }
         res.push(fs);
     }
-    res
+    (res, count)
 }
 
 fn release_index_internal(index: &mut [Vec<SstStatus>], findex: Vec<Vec<(String, usize)>>, progress_l: usize, progress_f: usize) {
@@ -150,8 +152,9 @@ mod tests {
         println!("{id}");
         let sk = "1_1".as_bytes().to_vec();
         let ek = "2_1".as_bytes().to_vec();
-        let (d, _) = manager.find_ssts(&sk, &ek);
+        let (d, _, cnt) = manager.find_ssts(&sk, &ek);
         println!("{:?}", d);
+        assert!(cnt > 0);
     }
 
     fn generate_segment_map() -> SegmentMap {
