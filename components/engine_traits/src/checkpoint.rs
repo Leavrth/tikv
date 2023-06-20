@@ -1,8 +1,8 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{path::Path, collections::BTreeMap, fmt::Debug};
+use std::{collections::BTreeMap, fmt::Debug, path::Path};
 
-use crate::{Result, CfName};
+use crate::{CfName, Result};
 
 pub trait Checkpointable {
     type Checkpointer: Checkpointer;
@@ -27,7 +27,7 @@ pub trait Checkpointer {
 
 pub struct SstFileInfo {
     pub file_name: String,
-   //pub start_key: Key,
+    // pub start_key: Key,
     pub end_key: Vec<u8>,
     pub idx: usize,
 }
@@ -46,7 +46,7 @@ impl Debug for ColumnFamilyMetadata {
 
         for (level, ssts) in self.ssts.iter().enumerate() {
             let mut ss = String::new();
-            for SstFileInfo{file_name, ..} in ssts.values() {
+            for SstFileInfo { file_name, .. } in ssts.values() {
                 let str = format!("name: {file_name}");
                 ss = ss + &str
             }

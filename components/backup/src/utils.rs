@@ -267,7 +267,7 @@ impl KeyValueCodec {
 
 pub fn convert_encoded_key_to_raw_key(ek: Vec<u8>) -> Vec<u8> {
     if ek.is_empty() {
-        return ek
+        return ek;
     }
     Key::from_encoded(ek).into_raw().unwrap()
 }

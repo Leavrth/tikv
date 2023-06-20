@@ -1,21 +1,23 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{path::Path, collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-use engine_traits::{Checkpointable, Checkpointer, Result, SstFileInfo, CfName, ColumnFamilyMetadata};
+use engine_traits::{
+    CfName, Checkpointable, Checkpointer, ColumnFamilyMetadata, Result, SstFileInfo,
+};
+use keys::{origin_key, validate_data_key};
 use rocksdb::DB;
-use keys::origin_key;
 
-use crate::{r2e, RocksEngine, util};
+use crate::{r2e, util, RocksEngine};
 
 impl Checkpointable for RocksEngine {
     type Checkpointer = RocksEngineCheckpointer;
 
     fn new_checkpointer(&self) -> Result<Self::Checkpointer> {
         match self.as_inner().new_checkpointer() {
-            Ok(pointer) => Ok(RocksEngineCheckpointer{
+            Ok(pointer) => Ok(RocksEngineCheckpointer {
                 db: self.as_inner().clone(),
-                pointer
+                pointer,
             }),
             Err(e) => Err(r2e(e)),
         }
@@ -32,7 +34,7 @@ impl Checkpointable for RocksEngine {
 
 pub struct RocksEngineCheckpointer {
     db: Arc<DB>,
-    pointer: rocksdb::Checkpointer
+    pointer: rocksdb::Checkpointer,
 }
 
 impl Checkpointer for RocksEngineCheckpointer {
@@ -61,29 +63,45 @@ impl Checkpointer for RocksEngineCheckpointer {
             let files = level_metadata.get_files();
             file_count += files.len();
             for file in files {
-                file_size += file.get_size();
-                let start_key = origin_key(file.get_smallestkey()).to_vec();
-                let end_key = origin_key(file.get_largestkey()).to_vec();
-                ssts.insert(start_key, SstFileInfo{
-                    file_name: file.get_name(),
-                    end_key,
-                    idx: 0,
-                });
-            };
+                if let Some((start_key, end_key)) =
+                    origin_if_data_key(file.get_smallestkey(), file.get_largestkey())
+                {
+                    file_size += file.get_size();
+                    ssts.insert(
+                        start_key,
+                        SstFileInfo {
+                            file_name: file.get_name(),
+                            end_key,
+                            idx: 0,
+                        },
+                    );
+                }
+            }
             lssts.push(ssts);
         }
 
         Ok(ColumnFamilyMetadata {
             file_count,
             file_size,
-            ssts: lssts
+            ssts: lssts,
         })
+    }
+}
+
+fn origin_if_data_key(start_key: &[u8], end_key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    match (validate_data_key(start_key), validate_data_key(end_key)) {
+        (true, true) => Some((origin_key(start_key).to_vec(), origin_key(end_key).to_vec())),
+        (true, false) => Some((origin_key(start_key).to_vec(), keys::DATA_MAX_KEY.to_vec())),
+        (false, true) => Some((keys::DATA_MIN_KEY.to_vec(), origin_key(end_key).to_vec())),
+        (false, false) => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use engine_traits::{Checkpointable, Checkpointer, Peekable, SyncMutable, ALL_CFS, CF_DEFAULT, MiscExt};
+    use engine_traits::{
+        Checkpointable, Checkpointer, MiscExt, Peekable, SyncMutable, ALL_CFS, CF_DEFAULT,
+    };
     use tempfile::tempdir;
 
     use crate::util::new_engine;

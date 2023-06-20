@@ -9,7 +9,7 @@ use std::{
 };
 
 use api_version::{dispatch_api_version, keyspace::KvPair, ApiV1, KvFormat, RawValue};
-use backup::{Task, Operation};
+use backup::{Operation, Task};
 use collections::HashMap;
 use engine_traits::{CfName, IterOptions, CF_DEFAULT, CF_WRITE, DATA_KEY_PREFIX_LEN};
 use external_storage_export::make_local_backend;
@@ -302,7 +302,9 @@ impl TestSuite {
         let (tx, rx) = future_mpsc::unbounded();
         for end in self.endpoints.values() {
             let (task, _) = Task::new(req.clone(), tx.clone()).unwrap();
-            end.scheduler().schedule(Operation::BackupTask(task)).unwrap();
+            end.scheduler()
+                .schedule(Operation::BackupTask(task))
+                .unwrap();
         }
         rx
     }
@@ -325,7 +327,9 @@ impl TestSuite {
         let (tx, rx) = future_mpsc::unbounded();
         for end in self.endpoints.values() {
             let (task, _) = Task::new(req.clone(), tx.clone()).unwrap();
-            end.scheduler().schedule(Operation::BackupTask(task)).unwrap();
+            end.scheduler()
+                .schedule(Operation::BackupTask(task))
+                .unwrap();
         }
         rx
     }

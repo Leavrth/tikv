@@ -8,11 +8,11 @@ extern crate tikv_alloc;
 mod endpoint;
 mod errors;
 mod metrics;
+mod segment_manager;
 mod service;
 mod softlimit;
 mod utils;
 mod writer;
-mod segment_manager;
 
 pub use endpoint::{backup_file_name, Endpoint, Operation, Task};
 pub use errors::{Error, Result};

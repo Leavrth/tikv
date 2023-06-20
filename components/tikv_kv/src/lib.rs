@@ -36,8 +36,8 @@ use std::{
 
 use collections::HashMap;
 use engine_traits::{
-    CfName, IterOptions, KvEngine as LocalEngine, Mutable, MvccProperties, ReadOptions,
-    TabletRegistry, WriteBatch, CF_DEFAULT, CF_LOCK, Checkpointer,
+    CfName, Checkpointer, IterOptions, KvEngine as LocalEngine, Mutable, MvccProperties,
+    ReadOptions, TabletRegistry, WriteBatch, CF_DEFAULT, CF_LOCK,
 };
 use error_code::{self, ErrorCode, ErrorCodeExt};
 use futures::{compat::Future01CompatExt, future::BoxFuture, prelude::*};

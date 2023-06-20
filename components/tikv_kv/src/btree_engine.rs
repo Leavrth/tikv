@@ -12,7 +12,7 @@ use std::{
 };
 
 use collections::HashMap;
-use engine_panic::{PanicEngine, checkpoint::PanicCheckpointer};
+use engine_panic::{checkpoint::PanicCheckpointer, PanicEngine};
 use engine_traits::{CfName, IterOptions, ReadOptions, CF_DEFAULT, CF_LOCK, CF_WRITE};
 use futures::{future, stream, Future, Stream};
 use kvproto::kvrpcpb::Context;

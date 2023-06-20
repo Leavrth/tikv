@@ -1300,7 +1300,7 @@ pub mod test_gc_worker {
     use std::sync::{Arc, Mutex};
 
     use collections::HashMap;
-    use engine_rocks::{RocksEngine, RocksSnapshot, RocksEngineCheckpointer};
+    use engine_rocks::{RocksEngine, RocksEngineCheckpointer, RocksSnapshot};
     use futures::Future;
     use kvproto::{
         kvrpcpb::Context,

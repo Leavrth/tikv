@@ -14,7 +14,8 @@ use std::{
 use collections::HashMap;
 pub use engine_rocks::RocksSnapshot;
 use engine_rocks::{
-    get_env, RocksCfOptions, RocksDbOptions, RocksEngine as BaseRocksEngine, RocksEngineIterator, RocksEngineCheckpointer
+    get_env, RocksCfOptions, RocksDbOptions, RocksEngine as BaseRocksEngine,
+    RocksEngineCheckpointer, RocksEngineIterator,
 };
 use engine_traits::{
     CfName, Engines, IterOptions, Iterable, Iterator, KvEngine, Peekable, ReadOptions,

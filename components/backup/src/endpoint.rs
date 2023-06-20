@@ -12,7 +12,10 @@ use std::{
 use async_channel::SendError;
 use causal_ts::{CausalTsProvider, CausalTsProviderImpl};
 use concurrency_manager::ConcurrencyManager;
-use engine_traits::{name_to_cf, raw_ttl::ttl_current_ts, CfName, KvEngine, SstCompressionType, Checkpointer, CF_DEFAULT, CF_WRITE};
+use engine_traits::{
+    name_to_cf, raw_ttl::ttl_current_ts, CfName, Checkpointer, KvEngine, SstCompressionType,
+    CF_DEFAULT, CF_WRITE,
+};
 use external_storage::{BackendConfig, HdfsConfig, UnpinReader};
 use external_storage_export::{create_storage, ExternalStorage};
 use futures::{channel::mpsc::*, executor::block_on};
@@ -50,7 +53,7 @@ use txn_types::{Key, Lock, TimeStamp};
 use crate::{
     metrics::*,
     softlimit::{CpuStatistics, SoftLimit, SoftLimitByCpu},
-    utils::{ControlThreadPool, KeyValueCodec, convert_encoded_key_to_raw_key},
+    utils::{convert_encoded_key_to_raw_key, ControlThreadPool, KeyValueCodec},
     writer::{BackupWriterBuilder, CfNameWrap},
     Error, *,
 };
@@ -315,7 +318,7 @@ struct SstSendInfo {
     ssts_cnt: usize,
 }
 
-async fn save_sst_file_worker (
+async fn save_sst_file_worker(
     segment_manager: Arc<SegmentMapManager>,
     data_dir: PathBuf,
     rx: async_channel::Receiver<SstSendInfo>,
@@ -332,9 +335,14 @@ async fn save_sst_file_worker (
             &data_dir,
             &msg.file_names_d,
             &msg.file_names_w,
-            &mut d_progress_l, &mut d_progress_f,
-            &mut w_progress_l, &mut w_progress_f,
-            storage.clone()).await {
+            &mut d_progress_l,
+            &mut d_progress_f,
+            &mut w_progress_l,
+            &mut w_progress_f,
+            storage.clone(),
+        )
+        .await
+        {
             Err(e) => {
                 error_unknown!(?e; "upload sst file failed";
                 "start_key" => &log_wrappers::Value::key(&msg.start_key),
@@ -350,8 +358,12 @@ async fn save_sst_file_worker (
         }
 
         segment_manager.release_index(
-            msg.file_names_d, d_progress_l, d_progress_f,
-            msg.file_names_w, w_progress_l, w_progress_f,
+            msg.file_names_d,
+            d_progress_l,
+            d_progress_f,
+            msg.file_names_w,
+            w_progress_l,
+            w_progress_f,
         );
 
         let raw_start_key = convert_encoded_key_to_raw_key(msg.start_key.clone());
@@ -374,12 +386,28 @@ async fn upload_sst_file<P: AsRef<Path>>(
     data_dir: P,
     ssts_d: &Vec<Vec<(String, usize)>>,
     ssts_w: &Vec<Vec<(String, usize)>>,
-    d_progress_l: &mut usize, d_progress_f: &mut usize,
-    w_progress_l: &mut usize, w_progress_f: &mut usize,
+    d_progress_l: &mut usize,
+    d_progress_f: &mut usize,
+    w_progress_l: &mut usize,
+    w_progress_f: &mut usize,
     storage: Arc<dyn ExternalStorage>,
 ) -> std::io::Result<()> {
-    upload_sst_file_internal(data_dir.as_ref(), ssts_d, d_progress_l, d_progress_f, storage.clone()).await?;
-    upload_sst_file_internal(data_dir.as_ref(), ssts_w, w_progress_l, w_progress_f, storage).await
+    upload_sst_file_internal(
+        data_dir.as_ref(),
+        ssts_d,
+        d_progress_l,
+        d_progress_f,
+        storage.clone(),
+    )
+    .await?;
+    upload_sst_file_internal(
+        data_dir.as_ref(),
+        ssts_w,
+        w_progress_l,
+        w_progress_f,
+        storage,
+    )
+    .await
 }
 
 async fn upload_sst_file_internal<P: AsRef<Path>>(
@@ -1230,23 +1258,12 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         let backend = Arc::<dyn ExternalStorage>::from(backend);
         let concurrency = self.config_manager.0.read().unwrap().num_threads;
         self.pool.borrow_mut().adjust_with(concurrency);
-    
+
         match request.mode {
-            BackupMode::Scan => self.handle_scan_backup(
-                concurrency,
-                prs,
-                backend,
-                codec,
-                request,
-                resp,
-            ),
-            BackupMode::File => self.handle_file_backup(
-                concurrency,
-                prs,
-                backend,
-                request,
-                resp,
-            ),
+            BackupMode::Scan => {
+                self.handle_scan_backup(concurrency, prs, backend, codec, request, resp)
+            }
+            BackupMode::File => self.handle_file_backup(concurrency, prs, backend, request, resp),
             _ => error!("unknown backup mode"; "mode" => ?request.mode),
         };
     }
@@ -1291,16 +1308,13 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
             Some(manager) => manager,
             None => {
                 let mut resp = BackupResponse::new();
-                let err_msg = format!(
-                    "ssts are not found, unique id: {:?}",
-                    id
-                );
+                let err_msg = format!("ssts are not found, unique id: {:?}", id);
                 resp.set_error(crate::Error::Other(box_err!(err_msg)).into());
-                if let Err(err) =  resp_tx.unbounded_send(resp) {
+                if let Err(err) = resp_tx.unbounded_send(resp) {
                     warn!("failed to send response"; "err" => ?err)
                 }
                 return;
-            },
+            }
         };
 
         let (tx, rx) = async_channel::bounded(1);
@@ -1313,7 +1327,6 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                 backend.clone(),
             ));
         }
-
 
         let batch_size = self.config_manager.0.read().unwrap().batch_size;
         self.pool.borrow_mut().spawn(async move {
@@ -1334,7 +1347,8 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                     }
                     let start_key = brange.start_key.map_or_else(Vec::new, |k| k.into_encoded());
                     let end_key = brange.end_key.map_or_else(Vec::new, |k| k.into_encoded());
-                    let (d_ssts, w_ssts, ssts_cnt) = segment_manager.find_ssts(&start_key, &end_key);
+                    let (d_ssts, w_ssts, ssts_cnt) =
+                        segment_manager.find_ssts(&start_key, &end_key);
                     info!("select {} ssts", ssts_cnt);
                     if ssts_cnt == 0 {
                         let mut resp = BackupResponse::new();
@@ -1342,18 +1356,21 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                         let raw_end_key = convert_encoded_key_to_raw_key(end_key);
                         resp.set_start_key(raw_start_key);
                         resp.set_end_key(raw_end_key);
-                        if let Err(err) =  resp_tx.unbounded_send(resp) {
+                        if let Err(err) = resp_tx.unbounded_send(resp) {
                             warn!("failed to send response"; "err" => ?err)
                         }
                         continue;
                     }
-                    if let Err(err) = tx.send(SstSendInfo {
-                        file_names_d: d_ssts.clone(),
-                        file_names_w: w_ssts.clone(),
-                        start_key,
-                        end_key,
-                        ssts_cnt,
-                    }).await {
+                    if let Err(err) = tx
+                        .send(SstSendInfo {
+                            file_names_d: d_ssts.clone(),
+                            file_names_w: w_ssts.clone(),
+                            start_key,
+                            end_key,
+                            ssts_cnt,
+                        })
+                        .await
+                    {
                         error_unknown!(%err; "error during backup");
                         segment_manager.release_index(
                             d_ssts,
@@ -1366,13 +1383,12 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                         let mut resp = BackupResponse::new();
                         let err = Error::from(err);
                         resp.set_error(err.into());
-                        if let Err(err) =  resp_tx.unbounded_send(resp) {
+                        if let Err(err) = resp_tx.unbounded_send(resp) {
                             warn!("failed to send response"; "err" => ?err)
                         }
                     }
                 }
             }
-
         })
     }
 
@@ -1386,10 +1402,14 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
         info!("{}", s1);
         info!("{}", s2);
 
-        let id = self.segment_router.register(default_metadata.ssts, write_metadata.ssts);
+        let id = self
+            .segment_router
+            .register(default_metadata.ssts, write_metadata.ssts);
         let mut resp = PrepareResponse::new();
         resp.set_unique_id(id);
-        resp.set_collect_file_count((default_metadata.file_count + write_metadata.file_count) as u64);
+        resp.set_collect_file_count(
+            (default_metadata.file_count + write_metadata.file_count) as u64,
+        );
         resp.set_collect_file_size((default_metadata.file_size + write_metadata.file_size) as u64);
         if let Err(e) = tx.try_send(resp) {
             error_unknown!(?e; "[prepare] failed to send response");
