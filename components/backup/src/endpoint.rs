@@ -18,7 +18,7 @@ use engine_traits::{
 };
 use external_storage::{BackendConfig, HdfsConfig, UnpinReader};
 use external_storage_export::{create_storage, ExternalStorage};
-use futures::{channel::mpsc::*, executor::block_on};
+use futures::{channel::mpsc::*, executor::block_on, io::AllowStdIo};
 use kvproto::{
     brpb::*,
     encryptionpb::EncryptionMethod,
@@ -47,7 +47,6 @@ use tikv_util::{
     worker::Runnable,
 };
 use tokio::runtime::Runtime;
-use tokio_util::compat::TokioAsyncReadCompatExt;
 use txn_types::{Key, Lock, TimeStamp};
 
 use crate::{
@@ -315,7 +314,6 @@ struct SstSendInfo {
     file_names_w: Vec<Vec<(String, usize)>>,
     start_key: Vec<u8>,
     end_key: Vec<u8>,
-    ssts_cnt: usize,
 }
 
 async fn save_sst_file_worker(
@@ -424,9 +422,10 @@ async fn upload_sst_file_internal<P: AsRef<Path>>(
                 None => file_name_relative,
             };
             let file_name = data_dir.as_ref().join(file_name_relative);
-            let file = tokio::fs::File::open(file_name).await?;
-            let length = file.metadata().await?.len();
-            let reader = UnpinReader(Box::new(file.compat()));
+            // Use tokio::fs::File with futures::compat consumes too much CPU.
+            let file = std::fs::File::open(file_name)?;
+            let length = file.metadata()?.len();
+            let reader = UnpinReader(Box::new(AllowStdIo::new(file)));
             storage.write(file_name_relative, reader, length).await?;
             *progress_f += 1;
         }
@@ -1367,7 +1366,6 @@ impl<E: Engine, R: RegionInfoProvider + Clone + 'static> Endpoint<E, R> {
                             file_names_w: w_ssts.clone(),
                             start_key,
                             end_key,
-                            ssts_cnt,
                         })
                         .await
                     {
