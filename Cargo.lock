@@ -3096,7 +3096,7 @@ dependencies = [
 [[package]]
 name = "librocksdb_sys"
 version = "0.1.0"
-source = "git+https://github.com/tikv/rust-rocksdb.git#782bfc8309f266da634267d207760362b362aa61"
+source = "git+https://github.com/yujuncen/rust-rocksdb.git?branch=iter-sst#d892777498a1b49466b54e05f45fac82c3d097b8"
 dependencies = [
  "bindgen 0.65.1",
  "bzip2-sys",
@@ -3115,7 +3115,11 @@ dependencies = [
 [[package]]
 name = "libtitan_sys"
 version = "0.0.1"
+<<<<<<< HEAD
 source = "git+https://github.com/tikv/rust-rocksdb.git#782bfc8309f266da634267d207760362b362aa61"
+=======
+source = "git+https://github.com/yujuncen/rust-rocksdb.git?branch=iter-sst#d892777498a1b49466b54e05f45fac82c3d097b8"
+>>>>>>> f85e5204a (added the per-region backup interface)
 dependencies = [
  "bzip2-sys",
  "cc",
@@ -5090,7 +5094,11 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
+<<<<<<< HEAD
 source = "git+https://github.com/tikv/rust-rocksdb.git#782bfc8309f266da634267d207760362b362aa61"
+=======
+source = "git+https://github.com/yujuncen/rust-rocksdb.git?branch=iter-sst#d892777498a1b49466b54e05f45fac82c3d097b8"
+>>>>>>> f85e5204a (added the per-region backup interface)
 dependencies = [
  "libc 0.2.146",
  "librocksdb_sys",
