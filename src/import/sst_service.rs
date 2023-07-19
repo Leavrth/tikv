@@ -914,11 +914,8 @@ impl<E: Engine> ImportSst for ImportSstService<E> {
                 }
             };
 
-            let res = importer.download_ext::<E::Local>(
-                req.get_sst(),
-                req.get_storage_backend(),
-                req.get_name(),
-                req.get_rewrite_rule(),
+            let resp = importer.download_ext_dispatcher::<E::Local>(
+                req,
                 cipher,
                 limiter,
                 tablet.into_owned(),
@@ -926,14 +923,6 @@ impl<E: Engine> ImportSst for ImportSstService<E> {
                     .cache_key(req.get_storage_cache_id())
                     .req_type(req.get_request_type()),
             );
-            let mut resp = DownloadResponse::default();
-            match res.await {
-                Ok(range) => match range {
-                    Some(r) => resp.set_range(r),
-                    None => resp.set_is_empty(true),
-                },
-                Err(e) => resp.set_error(e.into()),
-            }
             crate::send_rpc_response!(Ok(resp), sink, label, timer);
         };
 
