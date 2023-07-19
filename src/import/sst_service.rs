@@ -26,8 +26,7 @@ use kvproto::{
     kvrpcpb::Context,
 };
 use sst_importer::{
-    error_inc, metrics::*, sst_importer::DownloadExt, sst_meta_to_path, Config, ConfigManager,
-    Error, Result, SstImporter,
+    error_inc, metrics::*, sst_meta_to_path, Config, ConfigManager, Error, Result, SstImporter,
 };
 use tikv_kv::{
     Engine, LocalTablets, Modify, SnapContext, Snapshot, SnapshotExt, WriteData, WriteEvent,
@@ -849,15 +848,9 @@ impl<E: Engine> ImportSst for ImportSstService<E> {
                 }
             };
 
-            let resp = importer.download_ext_dispatcher::<E::Local>(
-                req,
-                cipher,
-                limiter,
-                tablet.into_owned(),
-                DownloadExt::default()
-                    .cache_key(req.get_storage_cache_id())
-                    .req_type(req.get_request_type()),
-            );
+            let resp = importer
+                .download_dispatcher::<E::Local>(req, cipher, limiter, tablet.into_owned())
+                .await;
             crate::send_rpc_response!(Ok(resp), sink, label, timer);
         };
 
