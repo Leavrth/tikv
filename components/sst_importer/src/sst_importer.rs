@@ -545,7 +545,7 @@ impl SstImporter {
         let mut res_sst = Vec::new();
         let start_rename_rewrite = Instant::now();
         if let Some((file_name, mut sst)) = dst_default {
-            let info = self
+            let res = self
                 .do_rewrite_ext(
                     &file_name,
                     &start_rename_rewrite,
@@ -561,16 +561,16 @@ impl SstImporter {
                             let _ = file_system::remove_file(&p);
                         }
                     },
-                )?
-                .map(|(_, info)| info);
-            if let Some(info) = info {
+                )?;
+            if let Some((range, info)) = res {
                 sst.set_total_bytes(info.file_size());
                 sst.set_total_kvs(info.num_entries());
+                sst.set_range(range);
                 res_sst.push(sst);
             }
         }
         if let Some((file_name, mut sst)) = dst_write {
-            let info = self
+            let res = self
                 .do_rewrite_ext(
                     &file_name,
                     &start_rename_rewrite,
@@ -586,11 +586,11 @@ impl SstImporter {
                             let _ = file_system::remove_file(&p);
                         }
                     },
-                )?
-                .map(|(_, info)| info);
-            if let Some(info) = info {
+                )?;
+            if let Some((range, info)) = res {
                 sst.set_total_bytes(info.file_size());
                 sst.set_total_kvs(info.num_entries());
+                sst.set_range(range);
                 res_sst.push(sst);
             }
         }
