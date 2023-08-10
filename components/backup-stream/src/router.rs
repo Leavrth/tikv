@@ -783,6 +783,85 @@ impl TempFileKey {
     }
 }
 
+struct MetadataMergeManager {
+    storage: Arc<dyn ExternalStorage>,
+    merge_count: usize,
+    flush_count: usize,
+    merged_metadata: Metadata,
+    prefix: uuid::Uuid,
+}
+
+impl MetadataMergeManager {
+    async fn new(storage: Arc<dyn ExternalStorage>) -> Result<MetadataMergeManager> {
+        let manager = Self {
+            storage,
+            merge_count: 100_usize,
+            flush_count: 0_usize,
+            merged_metadata: Metadata::new(),
+            prefix: uuid::Uuid::new_v4(),
+        };
+        manager.create_index().await?;
+        Ok(manager)
+    }
+
+    async fn create_index(&self) -> Result<()> {
+        let reader = UnpinReader(Box::new(Cursor::new(vec![0])));
+        self.storage.write(&self.merged_index_path(), reader, 1).await?;
+        Ok(())
+    }
+
+    async fn take(&mut self) -> Result<Vec<u8>> {
+        let buff = self.merged_metadata.write_to_bytes()
+            .map_err(|err| Error::Other(box_err!("failed to marshal proto: {}", err)))?;
+        self.merged_metadata = Metadata::new();
+        self.prefix = uuid::Uuid::new_v4();
+        self.create_index().await?;
+        Ok(buff)
+    }
+
+    fn min(ts1: u64, ots2: Option<u64>) -> u64 {
+        ots2.map_or(0, |ts2| ts2.min(ts1))
+    }
+
+    fn max(ts1: u64, ots2: Option<u64>) -> u64 {
+        ots2.map_or(0, |ts2| ts2.max(ts1))
+    }
+
+    fn merge(&mut self, metadata_info: &MetadataInfo) {
+        if metadata_info.file_groups.is_empty() {
+            return;
+        }
+        let merged_metadata = &mut self.merged_metadata;
+        let merged_metadata_file_groups = merged_metadata.mut_file_groups();
+        for group in &metadata_info.file_groups {
+            merged_metadata_file_groups.push(group.clone());
+        }
+        merged_metadata.set_resolved_ts(Self::min(merged_metadata.get_resolved_ts(), metadata_info.min_resolved_ts));
+        merged_metadata.set_min_ts(Self::min(merged_metadata.min_ts, metadata_info.min_ts));
+        merged_metadata.set_max_ts(Self::max(merged_metadata.max_ts, metadata_info.max_ts));
+    }
+
+    fn merged_index_path(&self) -> String {
+        format!(
+            "v1/backupmeta/index/{}",
+            &self.prefix,
+        )
+    }
+
+    fn merged_meta_path(&self) -> String {
+        format!(
+            "v1/backupmeta/{}/{}-merged_meta.xmeta",
+            &self.prefix,
+            self.merged_metadata.get_max_ts()
+        )
+    }
+
+    #[inline]
+    fn need_flush(&self) -> bool {
+        self.flush_count >= self.merge_count
+    }
+}
+
 pub struct StreamTaskInfo {
     pub(crate) task: StreamTask,
     /// support external storage. eg local/s3.
@@ -817,6 +896,8 @@ pub struct StreamTaskInfo {
     merged_file_size_limit: u64,
     /// The pool for holding the temporary files.
     temp_file_pool: Arc<TempFilePool>,
+    /// merge the metadata to reduce the number of download requests when restore or truncate.
+    meta_merge_manager: Mutex<MetadataMergeManager>,
 }
 
 impl std::fmt::Debug for StreamTaskInfo {
@@ -845,6 +926,7 @@ impl StreamTaskInfo {
             BackendConfig::default(),
         )?);
         let start_ts = task.info.get_start_ts();
+        let meta_manager = Mutex::new(MetadataMergeManager::new(Arc::clone(&storage)).await?);
         Ok(Self {
             task,
             storage,
@@ -860,6 +942,7 @@ impl StreamTaskInfo {
             global_checkpoint_ts: AtomicU64::new(start_ts),
             merged_file_size_limit,
             temp_file_pool: Arc::new(TempFilePool::new(temp_pool_cfg)?),
+            meta_merge_manager: meta_manager,
         })
     }
 
@@ -1145,7 +1228,21 @@ impl StreamTaskInfo {
 
     pub async fn flush_meta(&self, metadata_info: MetadataInfo) -> Result<()> {
         if !metadata_info.file_groups.is_empty() {
-            let meta_path = metadata_info.path_to_meta();
+            let (meta_path, merged_metadata) = {
+                let mut meta_manager = self.meta_merge_manager.lock().await;
+                let meta_path = metadata_info.path_to_meta(&meta_manager.prefix, meta_manager.flush_count);
+                meta_manager.flush_count += 1;
+                meta_manager.merge(&metadata_info);
+                let merge_metadata = if meta_manager.need_flush() {
+                    meta_manager.flush_count = 0;
+                    let merged_path = meta_manager.merged_meta_path();
+                    Some((merged_path, meta_manager.take().await?))
+                } else {
+                    meta_manager.flush_count += 1;
+                    None
+                };
+                (meta_path, merge_metadata)
+            };
             let meta_buff = metadata_info.marshal_to()?;
             let buflen = meta_buff.len();
 
@@ -1156,6 +1253,17 @@ impl StreamTaskInfo {
                     buflen as _,
                 )
                 .await?;
+
+            if let Some((merged_path, merged_buff)) = merged_metadata {
+                let buflen = merged_buff.len();
+                self.storage
+                    .write(
+                        &merged_path, 
+                        UnpinReader(Box::new(Cursor::new(merged_buff))),
+                        buflen as _,
+                    )
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -1348,11 +1456,13 @@ impl MetadataInfo {
             .map_err(|err| Error::Other(box_err!("failed to marshal proto: {}", err)))
     }
 
-    fn path_to_meta(&self) -> String {
+    // NOTICE: 
+    fn path_to_meta(&self, prefix: &uuid::Uuid, flush_count: usize) -> String {
         format!(
-            "v1/backupmeta/{}-{}.meta",
-            self.min_resolved_ts.unwrap_or_default(),
-            uuid::Uuid::new_v4()
+            "v1/backupmeta/{}/{}--{}.meta",
+            prefix,
+            self.max_ts.unwrap_or_default(),
+            flush_count
         )
     }
 }
