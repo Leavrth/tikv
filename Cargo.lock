@@ -340,7 +340,7 @@ dependencies = [
  "bytes",
  "fastrand 2.0.1",
  "http 0.2.12",
- "time 0.3.41",
+ "time 0.3.44",
  "tokio",
  "tracing",
  "url",
@@ -483,7 +483,7 @@ dependencies = [
  "once_cell",
  "percent-encoding",
  "sha2",
- "time 0.3.41",
+ "time 0.3.44",
  "tracing",
 ]
 
@@ -658,7 +658,7 @@ dependencies = [
  "pin-utils",
  "ryu",
  "serde",
- "time 0.3.41",
+ "time 0.3.44",
  "tokio",
  "tokio-util",
 ]
@@ -708,7 +708,7 @@ dependencies = [
  "slog",
  "slog-global",
  "tikv_util",
- "time 0.3.41",
+ "time 0.3.44",
  "tokio",
  "url",
  "uuid 1.7.0",
@@ -738,7 +738,7 @@ dependencies = [
  "rustc_version 0.4.0",
  "serde",
  "serde_json",
- "time 0.3.41",
+ "time 0.3.44",
  "url",
  "uuid 1.7.0",
 ]
@@ -757,7 +757,7 @@ dependencies = [
  "oauth2",
  "pin-project",
  "serde",
- "time 0.3.41",
+ "time 0.3.44",
  "tz-rs",
  "url",
  "uuid 1.7.0",
@@ -774,7 +774,7 @@ dependencies = [
  "futures 0.3.15",
  "serde",
  "serde_json",
- "time 0.3.41",
+ "time 0.3.44",
 ]
 
 [[package]]
@@ -791,7 +791,7 @@ dependencies = [
  "log",
  "serde",
  "serde_derive",
- "time 0.3.41",
+ "time 0.3.44",
  "url",
  "uuid 1.7.0",
 ]
@@ -812,7 +812,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "time 0.3.41",
+ "time 0.3.44",
  "url",
  "uuid 1.7.0",
 ]
@@ -830,7 +830,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
- "time 0.3.41",
+ "time 0.3.44",
 ]
 
 [[package]]
@@ -1980,9 +1980,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.4.0"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
+checksum = "d630bccd429a5bb5a64b5e94f693bfc48c9f8566418fda4c494cc94f911f87cc"
 dependencies = [
  "powerfmt",
  "serde",
@@ -7755,9 +7755,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.41"
+version = "0.3.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7619e19bc266e0f9c5e6686659d394bc57973859340060a69221e57dbc0c40"
+checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
  "itoa 1.0.1",
@@ -7773,15 +7773,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.4"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9e9a38711f559d9e3ce1cdb06dd7c5b8ea546bc90052da6d06bb76da74bb07c"
+checksum = "40868e7c1d2f0b8d73e4a8c7f0ff63af4f6d19be117e90bd73eb1d62cf831c6b"
 
 [[package]]
 name = "time-macros"
-version = "0.2.22"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3526739392ec93fd8b359c8e98514cb3e8e021beb4e5f597b00a0221f8ed8a49"
+checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
 dependencies = [
  "num-conv",
  "time-core",
@@ -8076,7 +8076,7 @@ version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
- "cfg-if 1.0.0",
+ "cfg-if 0.1.10",
  "static_assertions",
 ]
 
