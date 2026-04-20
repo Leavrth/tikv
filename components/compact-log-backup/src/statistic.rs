@@ -44,6 +44,12 @@ pub struct LoadMetaStatistic {
     pub prefetch_task_emitted: u64,
     /// How many spawned prefetch task finished?
     pub prefetch_task_finished: u64,
+    /// How many times the first queued prefetch task blocks later finished
+    /// tasks from being yielded.
+    pub prefetch_head_of_line_block_count: u64,
+    /// The maximum number of ready prefetch tasks waiting behind an unfinished
+    /// head task.
+    pub max_ready_but_blocked_prefetch_tasks: u64,
     /// How many errors happened during fetching from remote?
     pub error_during_downloading: u64,
     /// How many log files are filtered out by migration?
@@ -65,6 +71,16 @@ pub struct LoadStatistic {
     pub keys_in: u64,
     /// How many bytes we fetched from network, physically?
     pub physical_bytes_in: u64,
+    /// How many time we spent downloading and decompressing file content.
+    pub download_duration: Duration,
+    /// How many time we spent decoding the downloaded event stream.
+    pub decode_duration: Duration,
+    /// The slowest single-file end-to-end load duration.
+    pub max_file_total_duration: Duration,
+    /// The slowest single-file download/decompress duration.
+    pub max_file_download_duration: Duration,
+    /// The slowest single-file decode duration.
+    pub max_file_decode_duration: Duration,
     /// How many bytes the keys we loaded have, in their original form?
     pub logical_key_bytes_in: u64,
     /// How many bytes the values we loaded have, without compression?
@@ -127,7 +143,7 @@ pub mod prom {
         where
             S: serde::Serializer,
         {
-            use ::prometheus::core::Metric;
+            use prometheus::core::Metric;
             let proto = self.0.metric();
             let hist = proto.get_histogram();
             let mut m = serializer.serialize_map(Some(hist.get_bucket().len() + 2))?;

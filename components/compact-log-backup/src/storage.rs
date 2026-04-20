@@ -541,9 +541,17 @@ impl<'a> StreamMetaStorage<'a> {
 
     fn poll_first_prefetch(&mut self, cx: &mut Context<'_>) -> Poll<Result<MetaFile>> {
         self.running_fetch_tasks = 0;
+        let mut ready_but_blocked = 0;
         for fut in &mut self.prefetch {
-            if !fut.is_terminated() && fut.poll_unpin(cx) == Poll::Pending {
-                self.running_fetch_tasks += 1;
+            if !fut.is_terminated() {
+                match fut.poll_unpin(cx) {
+                    Poll::Pending => {
+                        self.running_fetch_tasks += 1;
+                    }
+                    Poll::Ready(()) => {
+                        ready_but_blocked += 1;
+                    }
+                }
             }
         }
         if self.prefetch[0].is_terminated() {
@@ -558,6 +566,13 @@ impl<'a> StreamMetaStorage<'a> {
                 Err(err) => Err(err.attach_current_frame()).into(),
             }
         } else {
+            if ready_but_blocked > 0 {
+                self.stat.prefetch_head_of_line_block_count += 1;
+                self.stat.max_ready_but_blocked_prefetch_tasks = self
+                    .stat
+                    .max_ready_but_blocked_prefetch_tasks
+                    .max(ready_but_blocked);
+            }
             Poll::Pending
         }
     }

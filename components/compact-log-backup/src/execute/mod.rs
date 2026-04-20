@@ -370,6 +370,7 @@ impl Execution {
             pending.push(join_handle);
 
             if pending.len() >= self.max_concurrent_subcompaction as _ {
+                let wait_begin = tikv_util::time::Instant::now();
                 let join = util::select_vec(&mut pending);
                 let (cres, cid) =
                     match Self::unpack_compaction_join(frame!("wait_for_compaction"; join).await) {
@@ -379,6 +380,13 @@ impl Execution {
                             break;
                         }
                     };
+                tikv_util::info!(
+                    "Waited for a running subcompaction slot.";
+                    "wait_duration" => ?wait_begin.saturating_elapsed(),
+                    "max_concurrent_subcompaction" => self.max_concurrent_subcompaction,
+                    "pending_after_wait" => pending.len(),
+                    "finished_cid" => cid.0,
+                );
                 if let Err(err) = self
                     .on_compaction_finish(cid, &cres, storage.as_ref(), *hooks)
                     .await

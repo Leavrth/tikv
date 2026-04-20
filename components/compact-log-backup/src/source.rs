@@ -13,6 +13,7 @@ use prometheus::core::{Atomic, AtomicU64};
 use tikv_util::{
     codec::stream_event::{self, Iterator},
     stream::{JustRetry, RetryExt, retry_all_ext},
+    time::Instant,
 };
 use txn_types::Key;
 
@@ -58,6 +59,7 @@ impl Source {
         input: Input,
         stat: &mut Option<&mut LoadStatistic>,
     ) -> Result<Vec<u8>> {
+        let begin = Instant::now();
         let error_during_downloading = Arc::new(AtomicU64::new(0));
         let counter = error_during_downloading.clone();
         let ext = RetryExt::default()
@@ -78,8 +80,11 @@ impl Source {
             }
         };
         let (content, size) = retry_all_ext(fetch, ext).await?;
+        let elapsed = begin.saturating_elapsed();
         if let Some(stat) = stat.as_mut() {
             stat.physical_bytes_in += size;
+            stat.download_duration += elapsed;
+            stat.max_file_download_duration = stat.max_file_download_duration.max(elapsed);
             stat.error_during_downloading += error_during_downloading.get();
         }
         Ok(content)
@@ -93,8 +98,10 @@ impl Source {
         mut stat: Option<&mut LoadStatistic>,
         mut on_key_value: impl FnMut(&[u8], &[u8]),
     ) -> Result<()> {
+        let begin = Instant::now();
         let content = self.load_remote(input, &mut stat).await?;
 
+        let decode_begin = Instant::now();
         let mut co = Cooperate::default();
         let mut iter = stream_event::EventIterator::new(&content);
         while let Some((k, v)) = iter.get_next()? {
@@ -106,8 +113,13 @@ impl Source {
                 stat.logical_value_bytes_in += iter.value().len() as u64;
             }
         }
+        let decode_elapsed = decode_begin.saturating_elapsed();
+        let total_elapsed = begin.saturating_elapsed();
         if let Some(stat) = stat.as_mut() {
             stat.files_in += 1;
+            stat.decode_duration += decode_elapsed;
+            stat.max_file_total_duration = stat.max_file_total_duration.max(total_elapsed);
+            stat.max_file_decode_duration = stat.max_file_decode_duration.max(decode_elapsed);
         }
         Ok(())
     }
