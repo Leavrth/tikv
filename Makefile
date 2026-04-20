@@ -258,12 +258,17 @@ fail_release:
 # The target used by CI/CD to build the distributable release artifacts.
 # Individual developers should only need to use the `dist_` rules when working
 # on the CI/CD system.
+DIST_PACKAGES ?= tikv-server tikv-ctl
+DIST_CHECK_BINS = $(foreach pkg,$(DIST_PACKAGES),${BIN_PATH}/$(pkg))
+
 dist_release:
 	make build_dist_release
 	@mkdir -p ${BIN_PATH}
-	@cp -f ${CARGO_TARGET_DIR}/release/tikv-ctl ${CARGO_TARGET_DIR}/release/tikv-server ${BIN_PATH}/
+	@for pkg in $(DIST_PACKAGES); do \
+		cp -f ${CARGO_TARGET_DIR}/release/$$pkg ${BIN_PATH}/; \
+	done
 ifeq ($(shell uname),Linux) # Macs binary isn't elf format
-	$(PYTHON) scripts/check-bins.py --features "${ENABLE_FEATURES}" --check-release ${BIN_PATH}/tikv-ctl ${BIN_PATH}/tikv-server
+	$(PYTHON) scripts/check-bins.py --features "${ENABLE_FEATURES}" --check-release $(DIST_CHECK_BINS)
 endif
 
 # Build with release flag as if it were for distribution, but without
@@ -276,11 +281,13 @@ ifeq ($(shell uname),Linux) # Macs don't have objcopy
 	# Set max die limit with -L to 100M (default 50M)
 	# otherwise this happens:
 	#   dwz: tikv-server: Too many DIEs, not optimizing
-	dwz -L 100000000 ${CARGO_TARGET_DIR}/release/tikv-server
-	dwz -L 100000000 ${CARGO_TARGET_DIR}/release/tikv-ctl
+	@for pkg in $(DIST_PACKAGES); do \
+		dwz -L 100000000 ${CARGO_TARGET_DIR}/release/$$pkg; \
+	done
 	# Reduce binary size by compressing binaries.
-	objcopy --compress-debug-sections=zlib-gnu ${CARGO_TARGET_DIR}/release/tikv-server
-	objcopy --compress-debug-sections=zlib-gnu ${CARGO_TARGET_DIR}/release/tikv-ctl
+	@for pkg in $(DIST_PACKAGES); do \
+		objcopy --compress-debug-sections=zlib-gnu ${CARGO_TARGET_DIR}/release/$$pkg; \
+	done
 endif
 
 # Distributable bins with SSE4.2 optimizations
@@ -462,6 +469,6 @@ x-build-dist: export X_CARGO_FEATURES=${ENABLE_FEATURES}
 x-build-dist: export X_CARGO_RELEASE=1
 x-build-dist: export X_CARGO_CONFIG_FILE=${DIST_CONFIG}
 x-build-dist: export X_CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
-x-build-dist: export X_PACKAGE=tikv-server tikv-ctl
+x-build-dist: export X_PACKAGE=${DIST_PACKAGES}
 x-build-dist:
 	bash scripts/run-cargo.sh
