@@ -260,6 +260,10 @@ fail_release:
 # on the CI/CD system.
 DIST_PACKAGES ?= tikv-server tikv-ctl
 DIST_CHECK_BINS = $(foreach pkg,$(DIST_PACKAGES),${BIN_PATH}/$(pkg))
+DIST_FEATURES ?= ${ENABLE_FEATURES}
+ifeq ($(strip $(DIST_PACKAGES)),tikv-ctl)
+DIST_FEATURES := $(filter-out memory-engine pprof-fp trace-async-tasks,${ENABLE_FEATURES})
+endif
 
 dist_release:
 	make build_dist_release
@@ -268,7 +272,7 @@ dist_release:
 		cp -f ${CARGO_TARGET_DIR}/release/$$pkg ${BIN_PATH}/; \
 	done
 ifeq ($(shell uname),Linux) # Macs binary isn't elf format
-	$(PYTHON) scripts/check-bins.py --features "${ENABLE_FEATURES}" --check-release $(DIST_CHECK_BINS)
+	$(PYTHON) scripts/check-bins.py --features "${DIST_FEATURES}" --check-release $(DIST_CHECK_BINS)
 endif
 
 # Build with release flag as if it were for distribution, but without
@@ -465,7 +469,7 @@ endif
 export X_CARGO_ARGS:=${CARGO_ARGS}
 
 x-build-dist: export X_CARGO_CMD=build
-x-build-dist: export X_CARGO_FEATURES=${ENABLE_FEATURES}
+x-build-dist: export X_CARGO_FEATURES=${DIST_FEATURES}
 x-build-dist: export X_CARGO_RELEASE=1
 x-build-dist: export X_CARGO_CONFIG_FILE=${DIST_CONFIG}
 x-build-dist: export X_CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
