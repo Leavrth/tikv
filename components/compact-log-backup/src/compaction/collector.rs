@@ -1,6 +1,6 @@
 // Copyright 2024 TiKV Project Authors. Licensed under Apache-2.0.
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -8,6 +8,8 @@ use std::{
 };
 
 use engine_traits::{CF_DEFAULT, CfName};
+use protobuf::Chars;
+use slog_global::info;
 use tokio_stream::Stream;
 
 use super::{SubcompactionCollectKey, UnformedSubcompaction};
@@ -58,6 +60,7 @@ pub struct CollectCachedSubcompaction<S: Stream<Item = Result<PhysicalLogFile>>>
     deferred_file: Option<PhysicalLogFile>,
     collector: SubcompactionCollector,
     ready_compactions: VecDeque<ReadySubcompaction>,
+    physical_file_sizes: HashMap<Chars, u64>,
     physical_file_cache: Arc<PhysicalFileCache>,
 }
 
@@ -127,6 +130,7 @@ impl<S: Stream<Item = Result<PhysicalLogFile>>> CollectCachedSubcompaction<S> {
                 stat: CollectSubcompactionStatistic::default(),
             },
             ready_compactions: VecDeque::new(),
+            physical_file_sizes: HashMap::new(),
             physical_file_cache,
         }
     }
@@ -217,6 +221,97 @@ impl SubcompactionCollector {
     }
 }
 
+fn retain_physical_file_sizes_for_pending_inputs(
+    collector: &SubcompactionCollector,
+    physical_file_sizes: &mut HashMap<Chars, u64>,
+) {
+    if physical_file_sizes.is_empty() {
+        return;
+    }
+
+    let mut pending_physical_files = HashSet::new();
+    for item in collector.items.values() {
+        pending_physical_files.extend(item.inputs.iter().map(|input| input.id.name.clone()));
+    }
+    physical_file_sizes.retain(|name, _| pending_physical_files.contains(name));
+}
+
+fn log_forced_compaction_physical_coverage(
+    compactions: &[Subcompaction],
+    physical_file_sizes: &HashMap<Chars, u64>,
+) {
+    if compactions.is_empty() {
+        return;
+    }
+
+    let mut total_missing_physical_file_sizes = 0;
+    let mut coverage = compactions
+        .iter()
+        .map(|compaction| {
+            let mut covered_physical_file_size = 0;
+            let mut missing_physical_file_sizes = 0;
+            let mut physical_files = HashSet::new();
+            for input in &compaction.inputs {
+                if physical_files.insert(&input.id.name) {
+                    if let Some(size) = physical_file_sizes.get(&input.id.name) {
+                        covered_physical_file_size += size;
+                    } else {
+                        missing_physical_file_sizes += 1;
+                    }
+                }
+            }
+            total_missing_physical_file_sizes += missing_physical_file_sizes;
+            (
+                covered_physical_file_size,
+                compaction.size,
+                physical_files.len(),
+                compaction.inputs.len(),
+                missing_physical_file_sizes,
+                compaction.subc_key.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    coverage.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    coverage.truncate(64);
+    let top_covered_physical_file_sizes = coverage.iter().map(|item| item.0).collect::<Vec<_>>();
+    let top_compactions = coverage
+        .iter()
+        .enumerate()
+        .map(
+            |(
+                idx,
+                (
+                    covered_physical_file_size,
+                    compaction_size,
+                    physical_files,
+                    inputs,
+                    missing_physical_file_sizes,
+                    key,
+                ),
+            )| {
+                format!(
+                    "rank={}, covered_physical_file_size={}, compaction_size={}, physical_files={}, inputs={}, missing_physical_file_sizes={}, key={}",
+                    idx + 1,
+                    covered_physical_file_size,
+                    compaction_size,
+                    physical_files,
+                    inputs,
+                    missing_physical_file_sizes,
+                    key,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+
+    info!(
+        "forced cached subcompaction physical coverage";
+        "compactions" => compactions.len(),
+        "top_covered_physical_file_sizes" => ?top_covered_physical_file_sizes,
+        "top_compactions" => ?top_compactions,
+        "missing_physical_file_sizes" => total_missing_physical_file_sizes,
+    );
+}
+
 impl<S: Stream<Item = Result<LogFile>>> Stream for CollectSubcompaction<S> {
     type Item = Result<Subcompaction>;
 
@@ -289,6 +384,7 @@ impl<S: Stream<Item = Result<PhysicalLogFile>>> Stream for CollectCachedSubcompa
                             update_stat_on_yield: true,
                         });
                     }
+                    this.physical_file_sizes.clear();
                     if this.ready_compactions.is_empty() {
                         return Poll::Ready(None);
                     }
@@ -325,6 +421,10 @@ impl<S: Stream<Item = Result<PhysicalLogFile>>> Stream for CollectCachedSubcompa
                             let pending: Vec<_> =
                                 this.collector.take_pending_subcompactions().collect();
                             if !pending.is_empty() {
+                                log_forced_compaction_physical_coverage(
+                                    &pending,
+                                    this.physical_file_sizes,
+                                );
                                 this.physical_file_cache
                                     .advance_round_after_force_compaction();
                             }
@@ -334,6 +434,7 @@ impl<S: Stream<Item = Result<PhysicalLogFile>>> Stream for CollectCachedSubcompa
                                     update_stat_on_yield: true,
                                 });
                             }
+                            this.physical_file_sizes.clear();
                             if this.ready_compactions.is_empty() {
                                 this.cache_wait.set(Some(wait));
                             }
@@ -341,13 +442,23 @@ impl<S: Stream<Item = Result<PhysicalLogFile>>> Stream for CollectCachedSubcompa
                         }
                     }
 
+                    this.physical_file_sizes
+                        .insert(physical_file_name, physical_file_size);
+                    let mut formed_compaction = false;
                     for file in physical_file.files {
                         if let Some(compaction) = this.collector.add_filtered_in_file(file) {
                             this.ready_compactions.push_back(ReadySubcompaction {
                                 compaction,
                                 update_stat_on_yield: false,
                             });
+                            formed_compaction = true;
                         }
+                    }
+                    if formed_compaction {
+                        retain_physical_file_sizes_for_pending_inputs(
+                            this.collector,
+                            this.physical_file_sizes,
+                        );
                     }
                 }
             }
