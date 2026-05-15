@@ -555,6 +555,8 @@ impl<E: KvEngine> SstImporter<E> {
             "speed_limit" => speed_limiter.speed_limit(),
         );
         let clean_paths = Mutex::new(Vec::new());
+        let mut input_sst_kv_count = 0;
+        let mut input_sst_kv_size = 0;
         defer! {
             for path in clean_paths.lock().unwrap().iter() {
                 self.remove_file_no_throw(path)
@@ -577,6 +579,9 @@ impl<E: KvEngine> SstImporter<E> {
             let env = get_env(self.key_manager.clone(), get_io_rate_limiter())?;
             let sst_reader = RocksSstReader::open_with_env(&dst_file_name, Some(env))?;
             sst_reader.verify_checksum()?;
+            let (kv_count, kv_size) = sst_reader.kv_count_and_size();
+            input_sst_kv_count += kv_count;
+            input_sst_kv_size += kv_size;
 
             readers_with_cf_name.push((sst_reader, meta.get_cf_name()));
             clean_paths.lock().unwrap().push(path.temp);
@@ -658,7 +663,33 @@ impl<E: KvEngine> SstImporter<E> {
 
         match res {
             Ok(r) => {
-                info!("download"; "meta" => ?basic_meta, "range" => ?r);
+                let mut output_sst_kv_count = 0;
+                let mut output_sst_kv_size = 0;
+                if let Some(res) = &r {
+                    for meta in &res.ssts {
+                        match self.validate(meta) {
+                            Ok(meta_info) => {
+                                output_sst_kv_count += meta_info.total_kvs;
+                                output_sst_kv_size += meta_info.total_bytes;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "failed to collect output SST kv stats";
+                                    "meta" => ?meta,
+                                    "err" => %e,
+                                );
+                            }
+                        }
+                    }
+                }
+                info!("download";
+                    "meta" => ?basic_meta,
+                    "range" => ?r,
+                    "input_sst_kv_count" => input_sst_kv_count,
+                    "input_sst_kv_size" => input_sst_kv_size,
+                    "output_sst_kv_count" => output_sst_kv_count,
+                    "output_sst_kv_size" => output_sst_kv_size,
+                );
                 Ok(r)
             }
             Err(e) => {
