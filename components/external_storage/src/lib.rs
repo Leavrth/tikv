@@ -121,6 +121,7 @@ pub trait ExternalStorage: 'static + Send + Sync + Any {
     ) -> io::Result<()>;
 
     /// Read all contents of the given path.
+    /// Return io::Error::NotFound if the file does not exist.
     fn read(&self, name: &str) -> ExternalData<'_>;
 
     /// Read part of contents of the given path.

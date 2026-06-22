@@ -7,7 +7,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use azure_core::auth::{AccessToken, TokenCredential};
+use azure_core::{
+    StatusCode,
+    auth::{AccessToken, TokenCredential},
+    error::ErrorKind as AzureErrorKind,
+};
 use azure_identity::{ClientSecretCredential, DefaultAzureCredential};
 use azure_storage::{ConnectionString, ConnectionStringBuilder, prelude::*};
 use azure_storage_blobs::{blob::operations::PutBlockBlobBuilder, prelude::*};
@@ -253,6 +257,17 @@ impl From<RequestError> for io::Error {
             RequestError::TimeOut(msg) => Self::new(io::ErrorKind::TimedOut, msg),
         }
     }
+}
+
+fn azure_error_to_io_error(err: azure_core::Error) -> io::Error {
+    let kind = match err.kind() {
+        AzureErrorKind::HttpResponse {
+            status: StatusCode::NotFound,
+            ..
+        } => io::ErrorKind::NotFound,
+        _ => io::ErrorKind::InvalidInput,
+    };
+    io::Error::new(kind, err)
 }
 
 impl RetryError for RequestError {
@@ -753,11 +768,9 @@ impl AzureStorage {
             }
             azure_core::Result::Ok(chunk)
         };
-        let stream = stream::once(
-            t.map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{}", e))),
-        )
-        .boxed()
-        .into_async_read();
+        let stream = stream::once(t.map_err(azure_error_to_io_error))
+            .boxed()
+            .into_async_read();
         Box::new(stream)
     }
 }
@@ -813,6 +826,17 @@ mod tests {
     use futures::AsyncReadExt;
 
     use super::*;
+
+    #[test]
+    fn test_azure_error_to_io_error() {
+        let err = AzureErrorKind::http_response(StatusCode::NotFound, None).into_error();
+        let err = azure_error_to_io_error(err);
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+
+        let err = AzureErrorKind::http_response(StatusCode::Forbidden, None).into_error();
+        let err = azure_error_to_io_error(err);
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn test_url_of_backend() {
